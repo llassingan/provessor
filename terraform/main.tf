@@ -13,15 +13,15 @@ provider "oci" {
 
 resource "oci_core_vcn" "vps_store" {
   compartment_id = var.compartment_ocid
-  cidr_blocks    = ["10.0.0.0/16"]
-  display_name   = "vps-store-vcn"
-  dns_label      = "vpsstore"
+  cidr_blocks    = [var.vcn_cidr_block]
+  display_name   = var.display_name
+  dns_label      = var.dns_label
 }
 
 resource "oci_core_internet_gateway" "igw" {
   compartment_id = var.compartment_ocid
   vcn_id         = oci_core_vcn.vps_store.id
-  display_name   = "vps-store-igw"
+  display_name   = "${var.display_name}-igw"
 }
 
 resource "oci_core_default_route_table" "default" {
@@ -35,8 +35,8 @@ resource "oci_core_default_route_table" "default" {
 resource "oci_core_subnet" "public" {
   compartment_id    = var.compartment_ocid
   vcn_id            = oci_core_vcn.vps_store.id
-  cidr_block        = "10.0.1.0/24"
-  display_name      = "vps-store-public-subnet"
+  cidr_block        = var.subnet_cidr_block
+  display_name      = "${var.display_name}-public-subnet"
   dns_label         = "public"
   security_list_ids = [oci_core_security_list.public.id]
 }
@@ -44,7 +44,7 @@ resource "oci_core_subnet" "public" {
 resource "oci_core_security_list" "public" {
   compartment_id = var.compartment_ocid
   vcn_id         = oci_core_vcn.vps_store.id
-  display_name   = "vps-store-public-sl"
+  display_name   = "${var.display_name}-public-sl"
 
   ingress_security_rules {
     protocol = "6"
