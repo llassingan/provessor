@@ -1,0 +1,196 @@
+const API_BASE = "/api";
+
+interface ApiError {
+  error?: string;
+}
+
+async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+    },
+    ...options,
+  });
+
+  if (res.status === 401) {
+    window.location.href = "/login";
+    throw new Error("Unauthorized");
+  }
+
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({ error: res.statusText }))) as ApiError;
+    throw new Error(err.error ?? `HTTP ${res.status}`);
+  }
+
+  if (res.status === 204) {
+    return undefined as T;
+  }
+
+  return (await res.json()) as T;
+}
+
+export interface User {
+  id: number;
+  email: string;
+  created_at: string;
+}
+
+export interface Template {
+  id: number;
+  name: string;
+  description: string;
+  type: "predefined" | "custom";
+  logo_url?: string;
+  shape: string;
+  default_ocpu: number;
+  default_memory: number;
+  boot_volume_size_gb: number;
+}
+
+export type VPSStatus =
+  | "pending"
+  | "provisioning"
+  | "running"
+  | "stopped"
+  | "failed"
+  | "terminated";
+
+export interface VPS {
+  id: number;
+  display_name: string;
+  template_id: number;
+  shape: string;
+  ocpu: number;
+  memory_gb: number;
+  boot_volume_size_gb: number;
+  oci_instance_id?: string;
+  public_ip?: string;
+  private_ip?: string;
+  status: VPSStatus;
+  initial_credentials?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Settings {
+  id: number;
+  tenancy_ocid: string;
+  user_ocid: string;
+  fingerprint: string;
+  private_key: string;
+  region: string;
+  compartment_ocid: string;
+  vcn_ocid: string;
+  subnet_ocid: string;
+  api_base_url: string;
+  network_provisioned: boolean;
+}
+
+export interface CreateVPSRequest {
+  template_id: number;
+  display_name: string;
+  shape?: string;
+  ocpu?: number;
+  memory_gb?: number;
+  boot_volume_size_gb?: number;
+  custom_playbook_yaml?: string;
+}
+
+export interface UpdateSettingsRequest {
+  tenancy_ocid: string;
+  user_ocid: string;
+  fingerprint: string;
+  private_key: string;
+  region: string;
+  compartment_ocid: string;
+  api_base_url: string;
+  api_token: string;
+}
+
+export const auth = {
+  signup(email: string, password: string): Promise<User> {
+    return apiFetch<User>("/auth/signup", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    });
+  },
+
+  login(email: string, password: string): Promise<User> {
+    return apiFetch<User>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    });
+  },
+
+  logout(): Promise<void> {
+    return apiFetch<void>("/auth/logout", { method: "POST" });
+  },
+};
+
+export const vps = {
+  list(): Promise<VPS[]> {
+    return apiFetch<VPS[]>("/vps");
+  },
+
+  get(id: number): Promise<VPS> {
+    return apiFetch<VPS>(`/vps/${id}`);
+  },
+
+  create(req: CreateVPSRequest): Promise<VPS> {
+    return apiFetch<VPS>("/vps", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  },
+
+  delete(id: number): Promise<void> {
+    return apiFetch<void>(`/vps/${id}`, { method: "DELETE" });
+  },
+
+  action(id: number, action: "start" | "stop"): Promise<VPS> {
+    return apiFetch<VPS>(`/vps/${id}/${action}`, { method: "POST" });
+  },
+};
+
+export const templates = {
+  list(): Promise<Template[]> {
+    return apiFetch<Template[]>("/templates");
+  },
+
+  create(req: {
+    name: string;
+    description: string;
+    shape: string;
+    default_ocpu: number;
+    default_memory: number;
+    boot_volume_size_gb: number;
+    cloud_init_yaml: string;
+    logo_url?: string;
+  }): Promise<Template> {
+    return apiFetch<Template>("/templates", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  },
+};
+
+export const settings = {
+  get(): Promise<Settings> {
+    return apiFetch<Settings>("/settings");
+  },
+
+  update(req: UpdateSettingsRequest): Promise<Settings> {
+    return apiFetch<Settings>("/settings", {
+      method: "PUT",
+      body: JSON.stringify(req),
+    });
+  },
+
+  provisionNetwork(): Promise<{ message: string }> {
+    return apiFetch<{ message: string }>("/network/setup", {
+      method: "POST",
+    });
+  },
+};
