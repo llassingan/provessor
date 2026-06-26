@@ -28,6 +28,7 @@ export default function NewVPS(): JSX.Element {
   const [selectedNetwork, setSelectedNetwork] = useState<Network | null>(null);
   const [networkList, setNetworkList] = useState<Network[]>([]);
   const [loadingNetworks, setLoadingNetworks] = useState(true);
+  const [showNoNetworkGuard, setShowNoNetworkGuard] = useState(false);
 
   const navigate = useNavigate();
 
@@ -61,6 +62,12 @@ export default function NewVPS(): JSX.Element {
         setLoadingNetworks(false);
       });
   }, []);
+
+  useEffect(() => {
+    if (step === 2 && !loadingNetworks && networkList.length === 0) {
+      setShowNoNetworkGuard(true);
+    }
+  }, [step, loadingNetworks, networkList]);
 
   const handleSelectTemplate = (tpl: Template): void => {
     setSelectedTemplate(tpl);
@@ -124,6 +131,54 @@ export default function NewVPS(): JSX.Element {
 
   return (
     <div className="mx-auto max-w-3xl">
+      {showNoNetworkGuard && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-amber-100">
+              <svg
+                className="h-6 w-6 text-amber-600"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.5}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"
+                />
+              </svg>
+            </div>
+            <h3 className="mb-1 text-center text-lg font-semibold text-amber-900">
+              Network Required
+            </h3>
+            <p className="mb-4 text-center text-sm text-amber-700">
+              You don't have any active network yet. Create a network before
+              provisioning a VPS.
+            </p>
+            <div className="flex justify-center gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  navigate("/networks/new");
+                }}
+                className="rounded-lg bg-primary-600 px-6 py-2 text-sm font-medium text-white hover:bg-primary-700"
+              >
+                Create network
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowNoNetworkGuard(false);
+                }}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                I&apos;ll do it later
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <h1 className="mb-1 text-2xl font-bold text-gray-900">
         New VPS Instance
       </h1>
@@ -355,15 +410,13 @@ export default function NewVPS(): JSX.Element {
                   <option>Loading networks...</option>
                 </select>
               ) : networkList.length === 0 ? (
-                <div className="rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-700">
-                  No ready networks available.{" "}
-                  <Link
-                    to="/networks/new"
-                    className="font-medium text-primary-600 underline hover:text-primary-700"
-                  >
-                    Create a network
-                  </Link>
-                </div>
+                <select
+                  id="network"
+                  disabled
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-400"
+                >
+                  <option>No ready networks</option>
+                </select>
               ) : (
                 <select
                   id="network"
