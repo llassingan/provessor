@@ -95,7 +95,8 @@ export default function Dashboard({
     setInstances((prev) => prev.filter((inst) => inst.id !== deletedId));
   };
 
-  const networkReady = settings?.network_provisioned ?? false;
+  const hasCredentials = settings !== null && settings.tenancy_ocid !== "";
+  const networkReady = hasCredentials;
 
   return (
     <div>

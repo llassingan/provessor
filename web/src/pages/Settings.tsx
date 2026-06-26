@@ -1,8 +1,6 @@
 import { useState, useEffect, type FormEvent } from "react";
 import { settings } from "../lib/api";
 import type { Settings, UpdateSettingsRequest } from "../lib/api";
-import { useSSE } from "../hooks/useSSE";
-import ProvisioningLog from "../components/ProvisioningLog";
 
 interface SettingsPageProps {
   settings: Settings | null;
@@ -53,11 +51,9 @@ export default function SettingsPage({
     formFromSettings(appSettings),
   );
   const [saving, setSaving] = useState(false);
-  const [provisioning, setProvisioning] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
-
-  const { events, connected } = useSSE("/api/network/events");
+  const [showHelp, setShowHelp] = useState(false);
 
   useEffect(() => {
     setForm(formFromSettings(appSettings));
@@ -110,31 +106,18 @@ export default function SettingsPage({
     }
   };
 
-  const handleProvision = async (): Promise<void> => {
-    setError("");
-    setProvisioning(true);
-    try {
-      await settings.provisionNetwork();
-      onSettingsRefresh();
-    } catch (err: unknown) {
-      setError(
-        err instanceof Error ? err.message : "Network provisioning failed",
-      );
-    } finally {
-      setProvisioning(false);
-    }
-  };
-
-  const hasCredentials = appSettings !== null && appSettings.tenancy_ocid !== "";
-  const networkReady = appSettings?.network_provisioned ?? false;
-
   return (
     <div className="mx-auto max-w-3xl space-y-8">
-      <div>
+      <div className="flex items-center gap-3">
         <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
-        <p className="mt-1 text-sm text-gray-500">
-          Configure your Oracle Cloud Infrastructure connection
-        </p>
+        <button
+          type="button"
+          onClick={() => { setShowHelp(true); }}
+          className="flex h-7 w-7 items-center justify-center rounded-full border border-gray-300 text-xs font-bold text-gray-500 transition-colors hover:border-gray-400 hover:text-gray-700"
+          aria-label="Help"
+        >
+          ?
+        </button>
       </div>
 
       {error && (
@@ -218,7 +201,7 @@ export default function SettingsPage({
                 setForm((f) => ({ ...f, private_key: e.target.value }));
               }}
               className="w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
-              placeholder="-----BEGIN PRIVATE KEY-----&#10;..."
+              placeholder="-----BEGIN PRIVATE KEY-----\n..."
             />
           </div>
 
@@ -232,80 +215,8 @@ export default function SettingsPage({
         </form>
       </div>
 
-      <div className="rounded-xl border border-gray-200 bg-white p-6">
-        <h2 className="mb-4 text-lg font-semibold text-gray-900">
-          Network Setup
-        </h2>
-
-        {appSettings && (appSettings.vcn_ocid || appSettings.subnet_ocid) && (
-          <div className="mb-4 grid gap-3 sm:grid-cols-2">
-            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-              <dt className="text-xs font-medium uppercase tracking-wide text-gray-400">
-                VCN OCID
-              </dt>
-              <dd className="mt-1 break-all font-mono text-xs text-gray-700">
-                {appSettings.vcn_ocid || "—"}
-              </dd>
-            </div>
-            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-              <dt className="text-xs font-medium uppercase tracking-wide text-gray-400">
-                Subnet OCID
-              </dt>
-              <dd className="mt-1 break-all font-mono text-xs text-gray-700">
-                {appSettings.subnet_ocid || "—"}
-              </dd>
-            </div>
-          </div>
-        )}
-
-        <div className="mb-4 flex items-center gap-3">
-          <span className="text-sm text-gray-600">Status:</span>
-          <span
-            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${
-              networkReady
-                ? "bg-emerald-100 text-emerald-700"
-                : "bg-gray-100 text-gray-600"
-            }`}
-          >
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${networkReady ? "bg-emerald-500" : "bg-gray-400"}`}
-            />
-            {networkReady ? "Provisioned" : "Not provisioned"}
-          </span>
-        </div>
-
-        {!networkReady && (
-          <button
-            type="button"
-            onClick={() => {
-              void handleProvision();
-            }}
-            disabled={!hasCredentials || provisioning}
-            className="rounded-lg bg-primary-600 px-6 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {provisioning ? "Provisioning..." : "Setup Network"}
-          </button>
-        )}
-
-        {!hasCredentials && (
-          <p className="mt-2 text-xs text-gray-400">
-            Save your OCI credentials first to enable network setup.
-          </p>
-        )}
-      </div>
-
-      {events.length > 0 && (
-        <div>
-          <div className="mb-3 flex items-center gap-2">
-            <h3 className="text-sm font-semibold text-gray-900">
-              Provisioning Progress
-            </h3>
-            <span
-              className={`inline-block h-2 w-2 rounded-full ${connected ? "bg-emerald-500" : "bg-gray-300"}`}
-            />
-          </div>
-          <ProvisioningLog events={events} connected={connected} />
-        </div>
+      {showHelp && (
+        <HelpModal onClose={() => { setShowHelp(false); }} />
       )}
     </div>
   );
@@ -333,6 +244,95 @@ function TextField({
         }}
         className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
       />
+    </div>
+  );
+}
+
+interface HelpModalProps {
+  onClose: () => void;
+}
+
+function HelpModal({ onClose }: HelpModalProps): JSX.Element {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-lg rounded-xl bg-white p-6 shadow-xl">
+        <h2 className="text-lg font-semibold text-gray-900">
+          How to get OCI Credentials
+        </h2>
+        <p className="mt-1 text-sm text-gray-500">
+          Follow these steps to obtain your Oracle Cloud Infrastructure credentials.
+        </p>
+
+        <div className="mt-6 space-y-4">
+          <HelpStep
+            number={1}
+            label="Sign in to OCI Console"
+            description="Go to cloud.oracle.com and sign in with your Oracle Cloud account"
+          />
+          <HelpStep
+            number={2}
+            label="Find Tenancy OCID"
+            description="Click your profile (top right) → Tenancy. Copy the Tenancy OCID from the details page"
+          />
+          <HelpStep
+            number={3}
+            label="Find User OCID"
+            description="Go to Identity → Users → Click your user. Copy the OCID"
+          />
+          <HelpStep
+            number={4}
+            label="Get API Key Fingerprint"
+            description="Generate an API key pair (openssl or OCI CLI). Upload the public key in the user's API Keys section. Copy the fingerprint shown"
+          />
+          <HelpStep
+            number={5}
+            label="Private Key"
+            description="Paste the full PEM private key including -----BEGIN PRIVATE KEY----- and -----END PRIVATE KEY----- lines"
+          />
+          <HelpStep
+            number={6}
+            label="Compartment OCID"
+            description="Go to Identity → Compartments. Click your compartment and copy its OCID"
+          />
+          <HelpStep
+            number={7}
+            label="Region & API Base URL"
+            description="Choose your OCI region (e.g. us-ashburn-1). API base URL is the appropriate OCI API endpoint for your region"
+          />
+        </div>
+
+        <div className="mt-6">
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-full rounded-lg bg-primary-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-700"
+          >
+            Got it
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HelpStep({
+  number,
+  label,
+  description,
+}: {
+  number: number;
+  label: string;
+  description: string;
+}): JSX.Element {
+  return (
+    <div className="flex gap-3">
+      <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-primary-100 text-xs font-bold text-primary-700">
+        {number}
+      </div>
+      <div>
+        <p className="text-sm font-medium text-gray-900">{label}</p>
+        <p className="text-xs text-gray-500">{description}</p>
+      </div>
     </div>
   );
 }

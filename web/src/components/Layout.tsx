@@ -13,6 +13,7 @@ interface LayoutProps {
 
 const NAV_ITEMS = [
   { path: "/dashboard", label: "Dashboard", icon: GridIcon },
+  { path: "/networks", label: "Networks", icon: NetworkIcon },
   { path: "/vps/new", label: "New VPS", icon: PlusIcon },
   { path: "/templates/new", label: "Templates", icon: TemplateIcon },
   { path: "/settings", label: "Settings", icon: GearIcon },
@@ -27,16 +28,6 @@ export default function Layout({
   const [showOnboarding, setShowOnboarding] = useState(false);
 
   useEffect(() => {
-    if (settings === null) {
-      setShowOnboarding(false);
-      return;
-    }
-
-    if (settings.network_provisioned) {
-      setShowOnboarding(false);
-      return;
-    }
-
     if (sessionStorage.getItem("onboarding_forced") === "1") {
       sessionStorage.removeItem("onboarding_forced");
       setShowOnboarding(true);
@@ -97,27 +88,6 @@ export default function Layout({
                       : "text-gray-400 hover:bg-sidebar-hover hover:text-white"
                   }
                 `;
-
-            if (
-              item.path === "/vps/new" &&
-              settings &&
-              !settings.network_provisioned
-            ) {
-              return (
-                <button
-                  key={item.path}
-                  type="button"
-                  onClick={() => {
-                    setSidebarOpen(false);
-                    setShowOnboarding(true);
-                  }}
-                  className={`w-full text-left ${linkClass}`}
-                >
-                  <item.icon className="h-5 w-5" />
-                  {item.label}
-                </button>
-              );
-            }
 
             return (
               <Link
@@ -253,6 +223,24 @@ function GearIcon({ className }: { className?: string }): JSX.Element {
         strokeLinecap="round"
         strokeLinejoin="round"
         d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+      />
+    </svg>
+  );
+}
+
+function NetworkIcon({ className }: { className?: string }): JSX.Element {
+  return (
+    <svg
+      className={className}
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={1.5}
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M12 20v-6M6 14v-2m12 2v-2M5 10h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v3a2 2 0 002 2zM5 19h14a2 2 0 002-2v-3a2 2 0 00-2-2H5a2 2 0 00-2 2v3a2 2 0 002 2z"
       />
     </svg>
   );

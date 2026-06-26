@@ -8,6 +8,8 @@ import NewVPS from "./pages/NewVPS";
 import VPSDetail from "./pages/VPSDetail";
 import SettingsPage from "./pages/Settings";
 import CustomTemplate from "./pages/CustomTemplate";
+import Networks from "./pages/Networks";
+import NewNetwork from "./pages/NewNetwork";
 import { settings } from "./lib/api";
 import type { Settings } from "./lib/api";
 
@@ -51,29 +53,6 @@ function ProtectedRoute({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-function SettingsGuard({
-  settings,
-  children,
-}: {
-  settings: Settings | null;
-  children: ReactNode;
-}): JSX.Element {
-  if (settings === null) {
-    return (
-      <div className="flex h-screen items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary-200 border-t-primary-600" />
-      </div>
-    );
-  }
-
-  if (!settings.network_provisioned) {
-    sessionStorage.setItem("onboarding_forced", "1");
-    return <Navigate to="/dashboard" replace />;
-  }
-
-  return <>{children}</>;
-}
-
 export default function App(): JSX.Element {
   const [appSettings, setAppSettings] = useState<Settings | null>(null);
 
@@ -109,13 +88,31 @@ export default function App(): JSX.Element {
         }
       />
       <Route
+        path="/networks"
+        element={
+          <ProtectedRoute>
+            <Layout settings={appSettings} onSettingsRefresh={fetchSettings}>
+              <Networks />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/networks/new"
+        element={
+          <ProtectedRoute>
+            <Layout settings={appSettings} onSettingsRefresh={fetchSettings}>
+              <NewNetwork />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/vps/new"
         element={
           <ProtectedRoute>
             <Layout settings={appSettings} onSettingsRefresh={fetchSettings}>
-              <SettingsGuard settings={appSettings}>
-                <NewVPS />
-              </SettingsGuard>
+              <NewVPS />
             </Layout>
           </ProtectedRoute>
         }

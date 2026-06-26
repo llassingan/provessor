@@ -36,6 +36,18 @@ export interface User {
   created_at: string;
 }
 
+export interface Network {
+  id: number;
+  name: string;
+  cidr_vcn: string;
+  cidr_subnet: string;
+  vcn_ocid: string;
+  subnet_ocid: string;
+  status: "pending" | "provisioning" | "ready" | "failed";
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Template {
   id: number;
   name: string;
@@ -60,6 +72,7 @@ export interface VPS {
   id: number;
   display_name: string;
   template_id: number;
+  network_id: number | null;
   shape: string;
   ocpu: number;
   memory_gb: number;
@@ -81,14 +94,12 @@ export interface Settings {
   private_key: string;
   region: string;
   compartment_ocid: string;
-  vcn_ocid: string;
-  subnet_ocid: string;
   api_base_url: string;
-  network_provisioned: boolean;
 }
 
 export interface CreateVPSRequest {
   template_id: number;
+  network_id: number;
   display_name: string;
   shape?: string;
   ocpu?: number;
@@ -186,9 +197,30 @@ export const settings = {
       body: JSON.stringify(req),
     });
   },
+};
 
-  provisionNetwork(): Promise<{ message: string }> {
-    return apiFetch<{ message: string }>("/network/setup", {
+export const networks = {
+  list(): Promise<Network[]> {
+    return apiFetch<Network[]>("/networks");
+  },
+
+  get(id: number): Promise<Network> {
+    return apiFetch<Network>(`/networks/${id}`);
+  },
+
+  create(name: string): Promise<Network> {
+    return apiFetch<Network>("/networks", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+  },
+
+  delete(id: number): Promise<void> {
+    return apiFetch<void>(`/networks/${id}`, { method: "DELETE" });
+  },
+
+  provision(id: number): Promise<{ status: string }> {
+    return apiFetch<{ status: string }>(`/networks/${id}/provision`, {
       method: "POST",
     });
   },

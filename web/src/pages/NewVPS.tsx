@@ -1,7 +1,7 @@
 import { useState, useEffect, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
-import { templates, vps } from "../lib/api";
-import type { Template } from "../lib/api";
+import { useNavigate, Link } from "react-router-dom";
+import { templates, vps, networks } from "../lib/api";
+import type { Template, Network } from "../lib/api";
 import TemplateCard from "../components/TemplateCard";
 
 const AVAILABLE_SHAPES = [
@@ -25,6 +25,10 @@ export default function NewVPS(): JSX.Element {
   const [bootVolume, setBootVolume] = useState(50);
   const [customPlaybook, setCustomPlaybook] = useState("");
 
+  const [selectedNetwork, setSelectedNetwork] = useState<Network | null>(null);
+  const [networkList, setNetworkList] = useState<Network[]>([]);
+  const [loadingNetworks, setLoadingNetworks] = useState(true);
+
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -40,6 +44,21 @@ export default function NewVPS(): JSX.Element {
       })
       .finally(() => {
         setLoadingTemplates(false);
+      });
+  }, []);
+
+  useEffect(() => {
+    setLoadingNetworks(true);
+    networks
+      .list()
+      .then((data) => {
+        setNetworkList(data.filter((n) => n.status === "ready"));
+      })
+      .catch(() => {
+        setNetworkList([]);
+      })
+      .finally(() => {
+        setLoadingNetworks(false);
       });
   }, []);
 
@@ -74,12 +93,17 @@ export default function NewVPS(): JSX.Element {
       setError("Boot volume must be between 10 and 200 GB.");
       return;
     }
+    if (!selectedNetwork) {
+      setError("Please select a network.");
+      return;
+    }
 
     setSubmitting(true);
     setError("");
     try {
       const created = await vps.create({
         template_id: selectedTemplate.id,
+        network_id: selectedNetwork.id,
         display_name: displayName.trim(),
         shape,
         ocpu,
@@ -315,6 +339,55 @@ export default function NewVPS(): JSX.Element {
               />
             </div>
 
+            <div>
+              <label
+                htmlFor="network"
+                className="mb-1 block text-sm font-medium text-gray-700"
+              >
+                Network
+              </label>
+              {loadingNetworks ? (
+                <select
+                  id="network"
+                  disabled
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-400"
+                >
+                  <option>Loading networks...</option>
+                </select>
+              ) : networkList.length === 0 ? (
+                <div className="rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-700">
+                  No ready networks available.{" "}
+                  <Link
+                    to="/networks/new"
+                    className="font-medium text-primary-600 underline hover:text-primary-700"
+                  >
+                    Create a network
+                  </Link>
+                </div>
+              ) : (
+                <select
+                  id="network"
+                  value={selectedNetwork?.id ?? ""}
+                  onChange={(e) => {
+                    const id = Number(e.target.value);
+                    const net = networkList.find((n) => n.id === id);
+                    setSelectedNetwork(net ?? null);
+                  }}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                  required
+                >
+                  <option value="" disabled>
+                    Select a network
+                  </option>
+                  {networkList.map((net) => (
+                    <option key={net.id} value={net.id}>
+                      {net.name} ({net.cidr_vcn})
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+
             {selectedTemplate.type === "custom" && (
               <div>
                 <label
@@ -349,7 +422,8 @@ export default function NewVPS(): JSX.Element {
             </button>
             <button
               type="submit"
-              className="rounded-lg bg-primary-600 px-6 py-2 text-sm font-medium text-white hover:bg-primary-700"
+              disabled={networkList.length === 0}
+              className="rounded-lg bg-primary-600 px-6 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Review
             </button>
@@ -392,10 +466,16 @@ export default function NewVPS(): JSX.Element {
                   {memory} GB
                 </dd>
               </div>
-              <div className="flex justify-between">
+              <div className="flex justify-between border-b border-gray-100 pb-3">
                 <dt className="text-sm text-gray-500">Boot Volume</dt>
                 <dd className="text-sm font-medium text-gray-900">
                   {bootVolume} GB
+                </dd>
+              </div>
+              <div className="flex justify-between">
+                <dt className="text-sm text-gray-500">Network</dt>
+                <dd className="text-sm font-medium text-gray-900">
+                  {selectedNetwork?.name ?? "—"}
                 </dd>
               </div>
             </dl>
