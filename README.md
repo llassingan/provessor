@@ -54,7 +54,13 @@ Your `.env` file should look like:
 
 ```env
 DB_ENCRYPTION_KEY=b647bf795dddbcd6a38e529c416f1d0d064874f3a949a4f86ed4e1f3e07a08f4
+CORS_ORIGINS=https://yourdomain.id,http://localhost:10001
 ```
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DB_ENCRYPTION_KEY` | Yes | 64-char hex string (32 bytes). Master encryption key for the database. |
+| `CORS_ORIGINS` | No | Comma-separated allowed origins. Defaults to `http://localhost:5173,http://localhost:10001`. Set to your dashboard domain in production. |
 
 > **Warning**: `DB_ENCRYPTION_KEY` is the master encryption key. Without it, your database — including all cloud credentials and customer data — is irrecoverable. Back it up.
 
@@ -79,7 +85,14 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`. The Vite dev server proxies `/api` requests to the Go backend.
+Open `http://localhost:10001`. The Vite dev server proxies `/api` to the Go backend.
+
+**Frontend env vars** (set in `.env` or `web/.env`):
+
+| Variable | Description |
+|----------|-------------|
+| `VITE_API_TARGET` | Backend URL that Vite proxies `/api` to. Defaults to `http://localhost:10000`. |
+| `VITE_API_BASE_URL` | Override the API base path from `/api` (only needed in production builds without the Vite proxy). |
 
 ### 4. Sign up and set up
 
@@ -119,9 +132,15 @@ make lint
 
 ```bash
 cd web
-npm run dev     # Dev server on :5173 with API proxy
+npm run dev     # Dev server on :10001 with API proxy
 npm run build   # Production build
 npm run lint    # ESLint (strict rules)
+
+# Override API target (if BE is on a different host)
+VITE_API_TARGET=http://api-provinci.example.com npm run dev
+
+# Production build pointing at external API
+VITE_API_BASE_URL=https://api-provinci.example.com/api npm run build
 ```
 
 ### Full rebuild from scratch
