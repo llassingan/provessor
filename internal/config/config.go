@@ -5,14 +5,19 @@ import (
 	"errors"
 	"os"
 	"strings"
+
+	"github.com/joho/godotenv"
 )
 
 type Config struct {
 	DBEncryptionKey string
 	CORSOrigins     []string
+	Dev             bool
 }
 
 func Load() (*Config, error) {
+	_ = godotenv.Load() // optional — env vars may come from Docker/system env instead
+
 	key := os.Getenv("DB_ENCRYPTION_KEY")
 	if key == "" {
 		return nil, errors.New("DB_ENCRYPTION_KEY environment variable is required")
@@ -25,8 +30,9 @@ func Load() (*Config, error) {
 	}
 
 	origins := parseOrigins(os.Getenv("CORS_ORIGINS"))
+	dev := strings.ToLower(os.Getenv("DEV")) == "true"
 
-	return &Config{DBEncryptionKey: key, CORSOrigins: origins}, nil
+	return &Config{DBEncryptionKey: key, CORSOrigins: origins, Dev: dev}, nil
 }
 
 func parseOrigins(raw string) []string {

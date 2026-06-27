@@ -12,6 +12,9 @@ opencode.json
 *.tfstate.*
 terraform.tfvars
 !terraform/terraform.tfvars.example
+*.db
+*.db-*
+
 
 # Go
 *.exe

@@ -29,6 +29,9 @@ func (r *SettingsRepository) Get(ctx context.Context) (*model.Settings, error) {
 		&s.APIBaseURL, &s.APIToken,
 		&s.CreatedAt, &s.UpdatedAt,
 	)
+	if err == sql.ErrNoRows {
+		return &model.Settings{ID: 1}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
