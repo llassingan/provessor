@@ -153,6 +153,15 @@ export default function VPSDetail(): JSX.Element {
               navigate("/dashboard");
             }}
           />
+          <button
+            type="button"
+            onClick={() => {
+              navigate(`/vps/${instance.id}/manage`);
+            }}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+          >
+            Manage
+          </button>
         </div>
       </div>
 

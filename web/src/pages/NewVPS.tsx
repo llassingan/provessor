@@ -1,5 +1,5 @@
 import { useState, useEffect, type FormEvent } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { templates, vps, networks } from "../lib/api";
 import type { Template, Network } from "../lib/api";
 import TemplateCard from "../components/TemplateCard";

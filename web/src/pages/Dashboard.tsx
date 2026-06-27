@@ -195,25 +195,23 @@ export default function Dashboard({
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {instances.map((inst) => (
-            <div
+            <button
               key={inst.id}
-              className="group rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-shadow hover:shadow-md"
+              type="button"
+              onClick={() => {
+                navigate(`/vps/${inst.id}`);
+              }}
+              className="group relative w-full cursor-pointer rounded-xl border border-gray-200 bg-white p-5 text-left shadow-sm transition-all hover:border-primary-300 hover:shadow-md"
             >
               <div className="mb-3 flex items-start justify-between">
-                <button
-                  type="button"
-                  onClick={() => {
-                    navigate(`/vps/${inst.id}`);
-                  }}
-                  className="text-left"
-                >
-                  <h3 className="font-semibold text-gray-900 hover:text-primary-600">
+                <div>
+                  <h3 className="font-semibold text-gray-900 group-hover:text-primary-600">
                     {inst.display_name}
                   </h3>
                   <p className="mt-0.5 text-xs text-gray-400">
                     Created {new Date(inst.created_at).toLocaleDateString()}
                   </p>
-                </button>
+                </div>
                 <StatusBadge status={inst.status} />
               </div>
 
@@ -224,12 +222,20 @@ export default function Dashboard({
                     <code className="rounded bg-gray-100 px-1.5 py-0.5 text-xs">
                       {inst.public_ip}
                     </code>
-                    <button
-                      type="button"
-                      onClick={() => {
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => {
+                        e.stopPropagation();
                         void navigator.clipboard.writeText(
                           inst.public_ip ?? "",
                         );
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.stopPropagation();
+                          void navigator.clipboard.writeText(inst.public_ip ?? '');
+                        }
                       }}
                       className="rounded p-0.5 text-gray-400 hover:text-gray-600"
                       title="Copy IP"
@@ -247,7 +253,7 @@ export default function Dashboard({
                           d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184"
                         />
                       </svg>
-                    </button>
+                    </span>
                   </div>
                 )}
                 <div className="text-xs text-gray-400">
@@ -256,7 +262,12 @@ export default function Dashboard({
                 </div>
               </div>
 
-              <div className="border-t border-gray-100 pt-3">
+              <div
+                onClick={(e) => { e.stopPropagation(); }}
+                onKeyDown={(e) => { e.stopPropagation(); }}
+                className="border-t border-gray-100 pt-3"
+                role="presentation"
+              >
                 <VPSActions
                   vpsInstance={inst}
                   onUpdate={handleUpdate}
@@ -265,7 +276,13 @@ export default function Dashboard({
                   }}
                 />
               </div>
-            </div>
+
+              <div className="absolute right-4 top-4 text-gray-300 opacity-0 transition-opacity group-hover:opacity-100">
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+                </svg>
+              </div>
+            </button>
           ))}
         </div>
       )}
