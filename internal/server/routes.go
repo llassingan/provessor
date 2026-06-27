@@ -60,9 +60,11 @@ func (s *Server) mountRoutes() {
 		if s.settingsHandler != nil {
 			r.Get("/api/settings", s.settingsHandler.HandleGetSettings)
 			r.Put("/api/settings", s.settingsHandler.HandleUpdateSettings)
+			r.Get("/api/regions", s.settingsHandler.HandleListRegions)
 		} else {
 			r.Get("/api/settings", handleGetSettingsStub)
 			r.Put("/api/settings", handleUpdateSettingsStub)
+			r.Get("/api/regions", handleListRegionsStub)
 		}
 
 		if s.networkHandler != nil {
@@ -133,6 +135,10 @@ func handleGetSettingsStub(w http.ResponseWriter, r *http.Request) {
 
 func handleUpdateSettingsStub(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "not implemented yet"})
+}
+
+func handleListRegionsStub(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, []interface{}{})
 }
 
 func handleNetworkSetupStub(w http.ResponseWriter, r *http.Request) {

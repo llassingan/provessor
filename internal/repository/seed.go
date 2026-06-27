@@ -88,21 +88,22 @@ func seedNetworks(db *sql.DB) error {
 	now := time.Now().UTC()
 	seeds := []struct {
 		name       string
+		region     string
 		cidrVCN    string
 		cidrSubnet string
 		vcnOCID    string
 		subnetOCID string
 		status     string
 	}{
-		{"production", "10.0.0.0/16", "10.0.1.0/24", "ocid1.vcn.dummy.production", "ocid1.subnet.dummy.production", "ready"},
-		{"staging", "10.1.0.0/16", "10.1.1.0/24", "ocid1.vcn.dummy.staging", "ocid1.subnet.dummy.staging", "ready"},
+		{"production", "us-ashburn-1", "10.0.0.0/16", "10.0.1.0/24", "ocid1.vcn.dummy.production", "ocid1.subnet.dummy.production", "ready"},
+		{"staging", "ap-singapore-1", "10.1.0.0/16", "10.1.1.0/24", "ocid1.vcn.dummy.staging", "ocid1.subnet.dummy.staging", "ready"},
 	}
 
 	for _, s := range seeds {
 		_, err := db.Exec(
-			`INSERT INTO networks (name, cidr_vcn, cidr_subnet, vcn_ocid, subnet_ocid, status, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			s.name, s.cidrVCN, s.cidrSubnet, s.vcnOCID, s.subnetOCID, s.status, now, now,
+			`INSERT INTO networks (name, region, cidr_vcn, cidr_subnet, vcn_ocid, subnet_ocid, status, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			s.name, s.region, s.cidrVCN, s.cidrSubnet, s.vcnOCID, s.subnetOCID, s.status, now, now,
 		)
 		if err != nil {
 			return err

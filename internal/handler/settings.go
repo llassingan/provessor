@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"vps-store/internal/repository"
+	"vps-store/internal/validator"
 )
 
 type SettingsHandler struct {
@@ -51,6 +52,10 @@ func (h *SettingsHandler) HandleGetSettings(w http.ResponseWriter, r *http.Reque
 		APIBaseURL:      s.APIBaseURL,
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *SettingsHandler) HandleListRegions(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, validator.RegionGroups())
 }
 
 type updateSettingsRequest struct {

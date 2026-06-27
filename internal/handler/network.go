@@ -47,7 +47,8 @@ func (h *NetworkHandler) HandleListNetworks(w http.ResponseWriter, r *http.Reque
 }
 
 type createNetworkRequest struct {
-	Name string `json:"name"`
+	Name   string `json:"name"`
+	Region string `json:"region"`
 }
 
 func (h *NetworkHandler) HandleCreateNetwork(w http.ResponseWriter, r *http.Request) {
@@ -58,12 +59,17 @@ func (h *NetworkHandler) HandleCreateNetwork(w http.ResponseWriter, r *http.Requ
 	}
 
 	req.Name = strings.TrimSpace(req.Name)
+	req.Region = strings.TrimSpace(req.Region)
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
+	if req.Region == "" {
+		writeError(w, http.StatusBadRequest, "region is required")
+		return
+	}
 
-	network, err := h.networkRepo.Create(r.Context(), req.Name)
+	network, err := h.networkRepo.Create(r.Context(), req.Name, req.Region)
 	if err != nil {
 		if strings.Contains(err.Error(), "maximum") {
 			writeError(w, http.StatusBadRequest, err.Error())
