@@ -204,6 +204,29 @@ export const vps = {
   },
 };
 
+export interface ShapeSpec {
+  name: string;
+  processor: string;
+  min_ocpu: number;
+  max_ocpu: number;
+  min_memory: number;
+  max_memory: number;
+  max_network: string;
+  description: string;
+}
+
+export interface ShapeGroup {
+  label: string;
+  description: string;
+  shapes: ShapeSpec[];
+}
+
+export const shapes = {
+  groups(): Promise<ShapeGroup[]> {
+    return apiFetch<ShapeGroup[]>("/shapes");
+  },
+};
+
 export const templates = {
   list(): Promise<Template[]> {
     return apiFetch<Template[]>("/templates");
