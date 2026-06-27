@@ -53,7 +53,7 @@ func (r *NetworkRepository) allocateCIDRSlot(ctx context.Context) ([2]string, er
 	return [2]string{}, fmt.Errorf("all %d network slots are in use", maxNetworks)
 }
 
-func (r *NetworkRepository) Create(ctx context.Context, name string) (*model.Network, error) {
+func (r *NetworkRepository) Create(ctx context.Context, name, region string) (*model.Network, error) {
 	count, err := r.Count(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("count networks: %w", err)
@@ -68,8 +68,8 @@ func (r *NetworkRepository) Create(ctx context.Context, name string) (*model.Net
 	}
 
 	result, err := r.db.ExecContext(ctx,
-		`INSERT INTO networks (name, cidr_vcn, cidr_subnet) VALUES (?, ?, ?)`,
-		name, cidr[0], cidr[1],
+		`INSERT INTO networks (name, region, cidr_vcn, cidr_subnet) VALUES (?, ?, ?, ?)`,
+		name, region, cidr[0], cidr[1],
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert network: %w", err)
@@ -85,7 +85,7 @@ func (r *NetworkRepository) Create(ctx context.Context, name string) (*model.Net
 
 func (r *NetworkRepository) List(ctx context.Context) ([]model.Network, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, name, cidr_vcn, cidr_subnet, vcn_ocid, subnet_ocid, status, created_at, updated_at
+		`SELECT id, name, region, cidr_vcn, cidr_subnet, vcn_ocid, subnet_ocid, status, created_at, updated_at
 		 FROM networks ORDER BY id ASC`,
 	)
 	if err != nil {
@@ -96,7 +96,7 @@ func (r *NetworkRepository) List(ctx context.Context) ([]model.Network, error) {
 	var networks []model.Network
 	for rows.Next() {
 		var n model.Network
-		if err := rows.Scan(&n.ID, &n.Name, &n.CIDRVCN, &n.CIDRSubnet,
+		if err := rows.Scan(&n.ID, &n.Name, &n.Region, &n.CIDRVCN, &n.CIDRSubnet,
 			&n.VCNOCID, &n.SubnetOCID, &n.Status, &n.CreatedAt, &n.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan network: %w", err)
 		}
@@ -112,9 +112,9 @@ func (r *NetworkRepository) List(ctx context.Context) ([]model.Network, error) {
 func (r *NetworkRepository) Get(ctx context.Context, id int64) (*model.Network, error) {
 	var n model.Network
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, name, cidr_vcn, cidr_subnet, vcn_ocid, subnet_ocid, status, created_at, updated_at
+		`SELECT id, name, region, cidr_vcn, cidr_subnet, vcn_ocid, subnet_ocid, status, created_at, updated_at
 		 FROM networks WHERE id = ?`, id,
-	).Scan(&n.ID, &n.Name, &n.CIDRVCN, &n.CIDRSubnet,
+	).Scan(&n.ID, &n.Name, &n.Region, &n.CIDRVCN, &n.CIDRSubnet,
 		&n.VCNOCID, &n.SubnetOCID, &n.Status, &n.CreatedAt, &n.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {

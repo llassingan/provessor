@@ -5,6 +5,7 @@ import "time"
 type Network struct {
 	ID         int64     `json:"id"`
 	Name       string    `json:"name"`
+	Region     string    `json:"region"`
 	CIDRVCN    string    `json:"cidr_vcn"`
 	CIDRSubnet string    `json:"cidr_subnet"`
 	VCNOCID    string    `json:"vcn_ocid"`

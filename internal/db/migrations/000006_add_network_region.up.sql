@@ -1,0 +1,1 @@
+ALTER TABLE networks ADD COLUMN region TEXT NOT NULL DEFAULT '';
