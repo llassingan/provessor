@@ -41,9 +41,9 @@ func (r *UserRepository) CreateUser(ctx context.Context, email, passwordHash str
 func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*model.User, error) {
 	var u model.User
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, email, password_hash, created_at, updated_at FROM users WHERE email = ?`,
+		`SELECT id, email, password_hash, failed_attempts, locked_until, created_at, updated_at FROM users WHERE email = ?`,
 		email,
-	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt, &u.UpdatedAt)
+	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.FailedAttempts, &u.LockedUntil, &u.CreatedAt, &u.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -56,9 +56,9 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*model.U
 func (r *UserRepository) GetByID(ctx context.Context, id int64) (*model.User, error) {
 	var u model.User
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, email, password_hash, created_at, updated_at FROM users WHERE id = ?`,
+		`SELECT id, email, password_hash, failed_attempts, locked_until, created_at, updated_at FROM users WHERE id = ?`,
 		id,
-	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt, &u.UpdatedAt)
+	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.FailedAttempts, &u.LockedUntil, &u.CreatedAt, &u.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -75,4 +75,28 @@ func (r *UserRepository) Count(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	return count, nil
+}
+
+func (r *UserRepository) IncrementFailedAttempts(ctx context.Context, id int64, lockedUntil *time.Time) error {
+	var err error
+	if lockedUntil != nil {
+		_, err = r.db.ExecContext(ctx,
+			`UPDATE users SET failed_attempts = failed_attempts + 1, locked_until = ?, updated_at = ? WHERE id = ?`,
+			lockedUntil.UTC(), time.Now().UTC(), id,
+		)
+	} else {
+		_, err = r.db.ExecContext(ctx,
+			`UPDATE users SET failed_attempts = failed_attempts + 1, updated_at = ? WHERE id = ?`,
+			time.Now().UTC(), id,
+		)
+	}
+	return err
+}
+
+func (r *UserRepository) ResetFailedAttempts(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE users SET failed_attempts = 0, locked_until = NULL, updated_at = ? WHERE id = ?`,
+		time.Now().UTC(), id,
+	)
+	return err
 }

@@ -10,10 +10,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
+	"vps-store/internal/config"
 	"vps-store/internal/model"
 	"vps-store/internal/repository"
 )
@@ -21,15 +23,18 @@ import (
 var (
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	ErrAdminAlreadyExists = errors.New("admin already exists")
+	ErrAccountLocked      = errors.New("account locked")
 )
 
 type AuthService struct {
-	userRepo      *repository.UserRepository
-	encryptionKey []byte
+	userRepo          *repository.UserRepository
+	encryptionKey     []byte
+	maxAttempts       int
+	lockoutMinutes    int
 }
 
-func NewAuthService(userRepo *repository.UserRepository, encryptionKeyHex string) (*AuthService, error) {
-	key, err := hex.DecodeString(encryptionKeyHex)
+func NewAuthService(userRepo *repository.UserRepository, cfg *config.Config) (*AuthService, error) {
+	key, err := hex.DecodeString(cfg.DBEncryptionKey)
 	if err != nil {
 		return nil, errors.New("invalid encryption key: must be valid hex")
 	}
@@ -37,8 +42,10 @@ func NewAuthService(userRepo *repository.UserRepository, encryptionKeyHex string
 		return nil, errors.New("invalid encryption key: must be 32 bytes")
 	}
 	return &AuthService{
-		userRepo:      userRepo,
-		encryptionKey: key,
+		userRepo:       userRepo,
+		encryptionKey:  key,
+		maxAttempts:    cfg.LoginMaxAttempts,
+		lockoutMinutes: cfg.LoginLockoutMinutes,
 	}, nil
 }
 
@@ -78,8 +85,42 @@ func (s *AuthService) Login(ctx context.Context, email, password string) (*model
 		return nil, "", ErrInvalidCredentials
 	}
 
+	// Check if account is currently locked
+	if user.LockedUntil != nil && user.LockedUntil.After(time.Now().UTC()) {
+		remaining := user.LockedUntil.Sub(time.Now().UTC())
+		remainingMinutes := int(remaining.Minutes())
+		if remainingMinutes < 1 {
+			remainingMinutes = 1
+		}
+		return nil, "", fmt.Errorf("%w: %d", ErrAccountLocked, remainingMinutes)
+	}
+
+	// Auto-reset counter if lockout period has expired
+	if user.FailedAttempts > 0 && (user.LockedUntil == nil || !user.LockedUntil.After(time.Now().UTC())) {
+		if err := s.userRepo.ResetFailedAttempts(ctx, user.ID); err != nil {
+			return nil, "", err
+		}
+		user.FailedAttempts = 0
+		user.LockedUntil = nil
+	}
+
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
+		// Increment failed attempts, lock if max exceeded
+		newFailedAttempts := user.FailedAttempts + 1
+		var lockedUntil *time.Time
+		if newFailedAttempts >= s.maxAttempts {
+			t := time.Now().UTC().Add(time.Duration(s.lockoutMinutes) * time.Minute)
+			lockedUntil = &t
+		}
+		if err := s.userRepo.IncrementFailedAttempts(ctx, user.ID, lockedUntil); err != nil {
+			return nil, "", err
+		}
 		return nil, "", ErrInvalidCredentials
+	}
+
+	// Login successful — reset counter and lock
+	if err := s.userRepo.ResetFailedAttempts(ctx, user.ID); err != nil {
+		return nil, "", err
 	}
 
 	token, err := s.createSessionToken(user.ID)

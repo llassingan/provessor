@@ -2,7 +2,9 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"vps-store/internal/service"
@@ -86,6 +88,16 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	user, token, err := h.authService.Login(r.Context(), req.Email, req.Password)
 	if err != nil {
+		if errors.Is(err, service.ErrAccountLocked) {
+			// Extract remaining minutes from error message: "account locked: N"
+			msg := strings.TrimPrefix(err.Error(), service.ErrAccountLocked.Error())
+			msg = strings.TrimPrefix(msg, ": ")
+			minutes, _ := strconv.Atoi(msg)
+			writeJSON(w, http.StatusLocked, map[string]interface{}{
+				"error": "Account locked. Try again in " + strconv.Itoa(minutes) + " minute" + map[bool]string{true: "s", false: ""}[minutes > 1] + ".",
+			})
+			return
+		}
 		if err == service.ErrInvalidCredentials {
 			writeError(w, http.StatusUnauthorized, "invalid credentials")
 			return

@@ -4,15 +4,19 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
 )
 
 type Config struct {
-	DBEncryptionKey string
-	CORSOrigins     []string
-	Dev             bool
+	DBEncryptionKey     string
+	CORSOrigins         []string
+	Dev                 bool
+	LogFile             string
+	LoginMaxAttempts    int
+	LoginLockoutMinutes int
 }
 
 func Load() (*Config, error) {
@@ -32,7 +36,30 @@ func Load() (*Config, error) {
 	origins := parseOrigins(os.Getenv("CORS_ORIGINS"))
 	dev := strings.ToLower(os.Getenv("DEV")) == "true"
 
-	return &Config{DBEncryptionKey: key, CORSOrigins: origins, Dev: dev}, nil
+	logFile := os.Getenv("LOG_FILE")
+	maxAttempts := parseIntEnv("LOGIN_MAX_ATTEMPTS", 5)
+	lockoutMinutes := parseIntEnv("LOGIN_LOCKOUT_MINUTES", 15)
+
+	return &Config{
+		DBEncryptionKey:     key,
+		CORSOrigins:         origins,
+		Dev:                 dev,
+		LogFile:             logFile,
+		LoginMaxAttempts:    maxAttempts,
+		LoginLockoutMinutes: lockoutMinutes,
+	}, nil
+}
+
+func parseIntEnv(key string, fallback int) int {
+	val := os.Getenv(key)
+	if val == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil || n < 1 {
+		return fallback
+	}
+	return n
 }
 
 func parseOrigins(raw string) []string {
