@@ -272,32 +272,27 @@ function HelpModal({ onClose }: HelpModalProps): JSX.Element {
           <HelpStep
             number={2}
             label="Find Tenancy OCID"
-            description="Click your profile (top right) → Tenancy. Copy the Tenancy OCID from the details page"
+            description="Click your profile (top right) → Click Tenancy (your-tenancy-name). Copy the Tenancy OCID from the details page"
           />
           <HelpStep
             number={3}
             label="Find User OCID"
-            description="Go to Identity → Users → Click your user. Copy the OCID"
+            description="Click your profile (top right) → User setting → In details tab, copy OCID"
           />
           <HelpStep
             number={4}
-            label="Get API Key Fingerprint"
-            description="Generate an API key pair (openssl or OCI CLI). Upload the public key in the user's API Keys section. Copy the fingerprint shown"
+            label="Get API Key Fingerprint, Private Key, and Public Key"
+            description="Click your profile (top right) → User setting → Click tab Tokens and keys → click the Add API Key → Pick Generate API key pair option → Download Public and Private key pair → Click Add button at the bottom → copy the fingerprint and region"
           />
           <HelpStep
             number={5}
-            label="Private Key"
-            description="Paste the full PEM private key including -----BEGIN PRIVATE KEY----- and -----END PRIVATE KEY----- lines"
+            label="Compartment OCID"
+            description="Click your profile (top right) → User setting → on the left pane select Compartments → Click Create Compartment button → enter Compartment name, description, and parents (use your default compartment) → Copy the compartment OCID"
           />
           <HelpStep
             number={6}
-            label="Compartment OCID"
-            description="Go to Identity → Compartments. Click your compartment and copy its OCID"
-          />
-          <HelpStep
-            number={7}
-            label="Region & API Base URL"
-            description="Choose your OCI region (e.g. us-ashburn-1). API base URL is the appropriate OCI API endpoint for your region"
+            label="API Base URL"
+            description="API base URL is the appropriate OCI API endpoint for your region. Use this format as your base URL: https://iaas.&lt;region&gt;.oraclecloud.com"
           />
         </div>
 
