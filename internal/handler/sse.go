@@ -26,7 +26,7 @@ func (h *SSEHandler) HandleVPSEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing instance id")
 		return
 	}
-	h.streamEvents(w, r, instanceID)
+	h.streamEvents(w, r, "vps:"+instanceID)
 }
 
 // HandleNetworkEvents — GET /api/network/events

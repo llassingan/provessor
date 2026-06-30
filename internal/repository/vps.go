@@ -123,3 +123,8 @@ func (r *VPSRepository) UpdateCredentials(ctx context.Context, id int64, credent
 		credentials, time.Now().UTC(), id)
 	return err
 }
+
+func (r *VPSRepository) Delete(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM vps WHERE id = ?`, id)
+	return err
+}

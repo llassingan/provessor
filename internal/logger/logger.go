@@ -2,8 +2,10 @@ package logger
 
 import (
 	"io"
+	"log"
 	"log/slog"
 	"os"
+	"path/filepath"
 )
 
 type Logger struct {
@@ -18,6 +20,10 @@ func New(dev bool, logPath string) (*Logger, error) {
 
 	var f *os.File
 	if dev && logPath != "" {
+		dir := filepath.Dir(logPath)
+		if err := os.MkdirAll(dir, 0750); err != nil {
+			return nil, err
+		}
 		var err error
 		f, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
@@ -27,6 +33,7 @@ func New(dev bool, logPath string) (*Logger, error) {
 	}
 
 	w := io.MultiWriter(writers...)
+	log.SetOutput(w)
 	handler := slog.NewTextHandler(w, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	})
@@ -39,6 +46,7 @@ func New(dev bool, logPath string) (*Logger, error) {
 }
 
 func (l *Logger) Close() error {
+	log.SetOutput(os.Stderr)
 	if l.file != nil {
 		return l.file.Close()
 	}
