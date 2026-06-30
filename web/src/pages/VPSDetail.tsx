@@ -79,7 +79,7 @@ export default function VPSDetail(): JSX.Element {
     if (events.length === 0) return;
     const last = events[events.length - 1];
     if (!last) return;
-    if (last.status === "success" || last.status === "error" || last.status === "failed") {
+    if (last.status === "running" || last.status === "success" || last.status === "error" || last.status === "failed") {
       vps
         .get(numericId)
         .then(setInstance)
@@ -88,6 +88,15 @@ export default function VPSDetail(): JSX.Element {
         });
     }
   }, [events, numericId]);
+
+  // Poll VPS status on SSE connect/reconnect — events may have been missed
+  // while the SSE connection was dropped during provisioning.
+  useEffect(() => {
+    if (!connected || !instance || instance.status === "running" || instance.status === "failed" || instance.status === "stopped" || instance.status === "terminated") return;
+    vps.get(numericId).then((data) => {
+      if (data.status !== instance.status) setInstance(data);
+    }).catch(() => {});
+  }, [connected, instance?.status, numericId]);
 
   if (loading) {
     return (
@@ -255,7 +264,7 @@ export default function VPSDetail(): JSX.Element {
             {connected ? "Live" : "Reconnecting"}
           </span>
         </div>
-        <ProvisioningLog events={events} connected={connected} />
+        <ProvisioningLog events={events} connected={connected} vpsStatus={instance.status} />
       </div>
     </div>
   );

@@ -3,9 +3,9 @@ import { useNavigate } from "react-router-dom";
 import { templates } from "../lib/api";
 
 const AVAILABLE_SHAPES = [
-  "VM.Standard.E4.Flex",
-  "VM.Standard.E3.Flex",
-  "VM.Standard.A1.Flex",
+	"VM.Standard.E4.Flex",
+	"VM.Standard.E5.Flex",
+	"VM.Standard.A1.Flex",
 ];
 
 export default function CustomTemplate(): JSX.Element {
@@ -47,8 +47,8 @@ export default function CustomTemplate(): JSX.Element {
       setError("Memory must be between 1 and 1024 GB.");
       return;
     }
-    if (bootVolume < 10 || bootVolume > 200) {
-      setError("Boot volume must be between 10 and 200 GB.");
+		if (bootVolume < 50 || bootVolume > 200) {
+			setError("Boot volume must be between 50 and 200 GB.");
       return;
     }
 
@@ -257,8 +257,8 @@ export default function CustomTemplate(): JSX.Element {
           <input
             id="tpl-boot"
             type="number"
-            min={10}
-            max={200}
+			min={50}
+			max={200}
             value={bootVolume}
             onChange={(e) => {
               setBootVolume(Number(e.target.value));

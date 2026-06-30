@@ -49,6 +49,17 @@ export default function NewNetwork(): JSX.Element {
     }
   }, [events]);
 
+  // Poll network status on SSE connect/reconnect — the "ready" event
+  // may have been published while the SSE connection was dropped.
+  useEffect(() => {
+    if (!connected || !network || complete) return;
+    networks.get(network.id).then((n) => {
+      if (n.status === "ready") {
+        setComplete(true);
+      }
+    }).catch(() => {});
+  }, [connected, network, complete]);
+
   const handleCreate = useCallback(
     async (e: FormEvent): Promise<void> => {
       e.preventDefault();
@@ -75,7 +86,7 @@ export default function NewNetwork(): JSX.Element {
         setCreating(false);
       }
     },
-    [name],
+    [name, region],
   );
 
   const handleProvision = useCallback(async (): Promise<void> => {

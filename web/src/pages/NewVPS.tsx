@@ -78,23 +78,23 @@ export default function NewVPS(): JSX.Element {
     setStep(2);
   };
 
-  const handleSelectGroup = (group: ShapeGroup): void => {
-    setSelectedGroup(group);
-    const first = group.shapes[0];
-    if (first) {
-      setSelectedShape(first);
-      setShape(first.name);
-      setOcpu(Math.min(1, first.max_ocpu));
-      setMemory(Math.min(4, first.max_memory));
-    }
-  };
+	const handleSelectGroup = (group: ShapeGroup): void => {
+		setSelectedGroup(group);
+		const first = group.shapes[0];
+		if (first) {
+			setSelectedShape(first);
+			setShape(first.name);
+			setOcpu(Math.min(1, first.max_ocpu));
+			setMemory(Math.max(Math.min(4, first.max_memory), first.min_memory));
+		}
+	};
 
-  const handleSelectShape = (s: ShapeSpec): void => {
-    setSelectedShape(s);
-    setShape(s.name);
-    setOcpu(Math.min(ocpu, s.max_ocpu));
-    setMemory(Math.min(memory, s.max_memory));
-  };
+	const handleSelectShape = (s: ShapeSpec): void => {
+		setSelectedShape(s);
+		setShape(s.name);
+		setOcpu(Math.min(ocpu, s.max_ocpu));
+		setMemory(Math.min(Math.max(memory, s.min_memory), s.max_memory));
+	};
 
   const handleSubmit = async (e: FormEvent): Promise<void> => {
     e.preventDefault();
@@ -104,17 +104,17 @@ export default function NewVPS(): JSX.Element {
       setError("Please enter a display name.");
       return;
     }
-    if (ocpu < 1 || ocpu > 128) {
-      setError("OCPU must be between 1 and 128.");
-      return;
-    }
-    if (memory < 1 || memory > 2048) {
-      setError("Memory must be between 1 and 2048 GB.");
-      return;
-    }
-    if (bootVolume < 10 || bootVolume > 200) {
-      setError("Boot volume must be between 10 and 200 GB.");
-      return;
+		if (ocpu < 1 || (selectedShape && ocpu > selectedShape.max_ocpu)) {
+					setError(`OCPU must be between 1 and ${selectedShape?.max_ocpu ?? 64}.`);
+					return;
+				}
+				if (memory < (selectedShape?.min_memory ?? 1) || (selectedShape && memory > selectedShape.max_memory)) {
+					setError(`Memory must be between ${selectedShape?.min_memory ?? 1} and ${selectedShape?.max_memory ?? 1024} GB.`);
+					return;
+				}
+				if (bootVolume < 50 || bootVolume > 200) {
+					setError("Boot volume must be between 50 and 200 GB.");
+					return;
     }
     if (!selectedNetwork) {
       setError("Please select a network.");
@@ -297,16 +297,16 @@ export default function NewVPS(): JSX.Element {
               <label className="mb-1 block text-sm font-medium text-gray-700">
                 Memory (GB): {memory}
               </label>
-              <input type="range" min={1} max={selectedShape?.max_memory ?? 1024} step={1} value={memory} onChange={(e) => setMemory(Number(e.target.value))} className="w-full accent-primary-600" />
-              <div className="flex justify-between text-xs text-gray-400">
-                <span>1 GB</span>
-                <span>{selectedShape?.max_memory ?? 1024} GB</span>
+			<input type="range" min={selectedShape?.min_memory ?? 1} max={selectedShape?.max_memory ?? 1024} step={1} value={memory} onChange={(e) => setMemory(Number(e.target.value))} className="w-full accent-primary-600" />
+				<div className="flex justify-between text-xs text-gray-400">
+					<span>{selectedShape?.min_memory ?? 1} GB</span>
+					<span>{selectedShape?.max_memory ?? 1024} GB</span>
               </div>
             </div>
 
             <div>
               <label htmlFor="boot" className="mb-1 block text-sm font-medium text-gray-700">Boot Volume (GB)</label>
-              <input id="boot" type="number" min={10} max={200} value={bootVolume} onChange={(e) => setBootVolume(Number(e.target.value))} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500" />
+              <input id="boot" type="number" min={50} max={200} value={bootVolume} onChange={(e) => setBootVolume(Number(e.target.value))} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500" />
             </div>
 
             <div>
