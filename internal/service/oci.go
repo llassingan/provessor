@@ -312,6 +312,69 @@ func (s *OCIComputeService) GetInstance(ctx context.Context, region, instanceID 
 	return &resp.Instance, nil
 }
 
+// GetInstanceIPs retrieves the public and private IP addresses for a running
+// OCI instance. It follows the OCI-recommended two-step process:
+//  1. ListVnicAttachments → get the VNIC OCIDs attached to the instance
+//  2. GetVnic → get the actual IP addresses from the primary VNIC
+//
+// The OCI core.Instance struct does NOT carry IP addresses directly.
+func (s *OCIComputeService) GetInstanceIPs(ctx context.Context, region, instanceID, compartmentOCID string) (publicIP, privateIP string, err error) {
+	s.log.Debug("oci_get_instance_ips_start", "instance_id", instanceID, "region", region)
+
+	computeClient, err := s.GetComputeClient(ctx, region)
+	if err != nil {
+		return "", "", fmt.Errorf("get compute client: %w", err)
+	}
+	networkClient, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return "", "", fmt.Errorf("get network client: %w", err)
+	}
+
+	// Step 1: List VNIC attachments for this instance
+	listResp, err := computeClient.ListVnicAttachments(ctx, core.ListVnicAttachmentsRequest{
+		CompartmentId: common.String(compartmentOCID),
+		InstanceId:    common.String(instanceID),
+	})
+	if err != nil {
+		s.log.Error("oci_list_vnic_attachments_failed", "instance_id", instanceID, "error", err)
+		return "", "", fmt.Errorf("list VNIC attachments: %w", err)
+	}
+
+	s.log.Debug("oci_vnic_attachments_listed", "instance_id", instanceID, "count", len(listResp.Items))
+
+	// Step 2: Find the first ATTACHED VNIC and fetch its IPs
+	for _, att := range listResp.Items {
+		if att.LifecycleState != core.VnicAttachmentLifecycleStateAttached {
+			s.log.Debug("oci_vnic_attachment_skipped", "state", string(att.LifecycleState))
+			continue
+		}
+		if att.VnicId == nil {
+			continue
+		}
+
+		s.log.Debug("oci_getting_vnic", "vnic_id", *att.VnicId)
+		getResp, err := networkClient.GetVnic(ctx, core.GetVnicRequest{
+			VnicId: att.VnicId,
+		})
+		if err != nil {
+			s.log.Error("oci_get_vnic_failed", "vnic_id", *att.VnicId, "error", err)
+			return "", "", fmt.Errorf("get VNIC %s: %w", *att.VnicId, err)
+		}
+
+		if getResp.Vnic.PrivateIp != nil {
+			privateIP = *getResp.Vnic.PrivateIp
+		}
+		if getResp.Vnic.PublicIp != nil {
+			publicIP = *getResp.Vnic.PublicIp
+		}
+
+		s.log.Debug("oci_instance_ips_retrieved", "instance_id", instanceID, "public_ip", publicIP, "private_ip", privateIP)
+		return publicIP, privateIP, nil
+	}
+
+	return "", "", fmt.Errorf("no attached VNIC found for instance %s", instanceID)
+}
+
 func (s *OCIComputeService) TerminateInstance(ctx context.Context, region, instanceID string) error {
 	computeClient, err := s.GetComputeClient(ctx, region)
 	if err != nil {
