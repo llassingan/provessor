@@ -189,6 +189,10 @@ export const vps = {
     return apiFetch<void>(`/vps/${id}`, { method: "DELETE" });
   },
 
+  terminate(id: number): Promise<{ status: string }> {
+    return apiFetch<{ status: string }>(`/vps/${id}/terminate`, { method: "POST" });
+  },
+
   action(id: number, action: "start" | "stop"): Promise<VPS> {
     return apiFetch<VPS>(`/vps/${id}/${action}`, { method: "POST" });
   },

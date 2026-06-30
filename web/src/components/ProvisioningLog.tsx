@@ -4,6 +4,7 @@ import type { SSEEvent } from "../hooks/useSSE";
 interface ProvisioningLogProps {
   events: SSEEvent[];
   connected: boolean;
+  vpsStatus?: string;
 }
 
 function statusColor(status: string): string {
@@ -41,12 +42,23 @@ function statusBg(status: string): string {
 export default function ProvisioningLog({
   events,
   connected,
+  vpsStatus,
 }: ProvisioningLogProps): JSX.Element {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [events]);
+
+  const isTerminal = vpsStatus === "failed" || vpsStatus === "running" || vpsStatus === "stopped" || vpsStatus === "terminated";
+
+  if (events.length === 0 && isTerminal) {
+    return (
+      <div className={`rounded-lg border px-4 py-3 text-sm ${vpsStatus === "failed" ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
+        {vpsStatus === "failed" ? "Provisioning failed." : "Provisioning complete."}
+      </div>
+    );
+  }
 
   if (events.length === 0) {
     return (
