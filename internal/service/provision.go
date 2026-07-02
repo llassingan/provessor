@@ -192,13 +192,35 @@ func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) err
 			sshPass := generatePassword(16)
 			log.Printf("[DEBUG] provision_vps: vps %d creating SSH user %q on %s", vpsID, sshUser, publicIP)
 
-			if sshErr := SSHCreateUser(publicIP, privateKeyPEM, sshUser, sshPass); sshErr != nil {
-				log.Printf("[DEBUG] provision_vps: vps %d SSH user creation failed: %v (continuing)", vpsID, sshErr)
+			var sshErr error
+			for attempt := 1; attempt <= 20; attempt++ {
+				sshErr = SSHCreateUser(publicIP, privateKeyPEM, sshUser, sshPass)
+				if sshErr == nil {
+					emit("ssh_connected", "provisioning", "SSH user created successfully")
+					break
+				}
+				log.Printf("[DEBUG] provision_vps: vps %d SSH attempt %d/20 failed: %v", vpsID, attempt, sshErr)
+				if attempt < 20 {
+					emit("ssh_retry", "provisioning", fmt.Sprintf("Waiting for SSH daemon (attempt %d/20)", attempt))
+					time.Sleep(10 * time.Second)
+				} else {
+					emit("ssh_failed", "provisioning", "SSH user creation failed after 20 attempts")
+				}
+			}
+
+			if sshErr != nil {
+				log.Printf("[DEBUG] provision_vps: vps %d SSH user creation failed after 20 attempts: %v (continuing)", vpsID, sshErr)
 			} else {
 				vps.SSHPrivateKey = model.NullString{NullString: sql.NullString{String: privateKeyPEM, Valid: true}}
 				vps.SSHUsername = model.NullString{NullString: sql.NullString{String: sshUser, Valid: true}}
 				vps.SSHPassword = model.NullString{NullString: sql.NullString{String: sshPass, Valid: true}}
 				log.Printf("[DEBUG] provision_vps: vps %d SSH credentials saved user=%s", vpsID, sshUser)
+
+				if verifyErr := SSHVerifyPasswordLogin(publicIP, sshUser, sshPass); verifyErr != nil {
+					log.Printf("[DEBUG] provision_vps: vps %d password login VERIFICATION FAILED: %v", vpsID, verifyErr)
+				} else {
+					log.Printf("[DEBUG] provision_vps: vps %d password login verified OK for user=%s", vpsID, sshUser)
+				}
 			}
 		}
 		}
@@ -234,6 +256,7 @@ func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) err
 func (s *VPSProvisionService) waitForRunning(ctx context.Context, vpsID int64, region, instanceID string) (*core.Instance, error) {
 	channel := fmt.Sprintf("vps:%d", vpsID)
 	deadline := time.Now().Add(5 * time.Minute)
+	started := time.Now()
 
 	for time.Now().Before(deadline) {
 		instance, err := s.computeService.GetInstance(ctx, region, instanceID)
@@ -242,6 +265,7 @@ func (s *VPSProvisionService) waitForRunning(ctx context.Context, vpsID int64, r
 		}
 
 		state := instance.LifecycleState
+		elapsed := time.Since(started).Round(time.Second)
 
 		switch state {
 		case core.InstanceLifecycleStateRunning:
@@ -253,10 +277,10 @@ func (s *VPSProvisionService) waitForRunning(ctx context.Context, vpsID int64, r
 				Type:      "status",
 				Status:    "provisioning",
 				Step:      "waiting_for_boot",
-				Message:   fmt.Sprintf("Instance state: %s", state),
+				Message:   fmt.Sprintf("Instance state: %s (%s elapsed)", state, elapsed),
 				Timestamp: time.Now().UnixMilli(),
 			})
-			time.Sleep(5 * time.Second)
+			time.Sleep(3 * time.Second)
 		}
 	}
 
@@ -771,6 +795,7 @@ func (s *VPSProvisionService) GetFirewallRules(ctx context.Context, vpsID int64)
 		}
 		if r.Description != nil {
 			rule.Description = *r.Description
+			rule.Name = *r.Description
 		}
 		rules = append(rules, rule)
 	}
@@ -791,6 +816,7 @@ func (s *VPSProvisionService) GetFirewallRules(ctx context.Context, vpsID int64)
 		}
 		if r.Description != nil {
 			rule.Description = *r.Description
+			rule.Name = *r.Description
 		}
 		rules = append(rules, rule)
 	}
@@ -879,15 +905,25 @@ func (s *VPSProvisionService) UpdateFirewallRules(ctx context.Context, vpsID int
 		protocol := common.String("6")
 
 		if r.Direction == "ingress" {
+			source := r.Source
+			if source == "" {
+				source = "0.0.0.0/0"
+			}
 			ingressRules = append(ingressRules, core.IngressSecurityRule{
 				Protocol:    protocol,
-				Source:      common.String(r.Source),
+				Source:      common.String(source),
+				Description: common.String(r.Description),
 				TcpOptions:  &core.TcpOptions{DestinationPortRange: &portRange},
 			})
 		} else if r.Direction == "egress" {
+			dest := r.Destination
+			if dest == "" {
+				dest = "0.0.0.0/0"
+			}
 			egressRules = append(egressRules, core.EgressSecurityRule{
 				Protocol:    protocol,
-				Destination: common.String(r.Destination),
+				Destination: common.String(dest),
+				Description: common.String(r.Description),
 				TcpOptions:  &core.TcpOptions{DestinationPortRange: &portRange},
 			})
 		}

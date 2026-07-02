@@ -457,16 +457,46 @@ func SSHCreateUser(host string, privateKeyPEM string, username string, password 
 	defer session.Close()
 
 	cmd := fmt.Sprintf(
-		"id -u %[1]s 2>/dev/null || useradd -m -s /bin/bash %[1]s && echo '%[1]s:%[2]s' | chpasswd",
+		"{ id -u %[1]s 2>/dev/null || useradd -m -s /bin/bash %[1]s; } && echo '%[1]s:%[2]s' | chpasswd && printf 'PasswordAuthentication yes\nChallengeResponseAuthentication yes\n' > /etc/ssh/sshd_config.d/99-provinci.conf && sshd -t && systemctl restart sshd && sshd -T | grep -i passwordauthentication",
 		shellEscapeTight(username),
 		shellEscapeTight(password),
 	)
 
-	if err := session.Run(cmd); err != nil {
-		return fmt.Errorf("useradd/chpasswd: %w", err)
+	out, err := session.CombinedOutput(cmd)
+	if err != nil {
+		return fmt.Errorf("ssh setup: %w (output: %s)", err, string(out))
 	}
 
 	return nil
+}
+
+// SSHVerifyPasswordLogin tests that a user can authenticate with password.
+// Retries up to 5 times with 5 second pauses between attempts to account
+// for sshd restart propagation delay.
+func SSHVerifyPasswordLogin(host string, username string, password string) error {
+	config := &ssh.ClientConfig{
+		User: username,
+		Auth: []ssh.AuthMethod{
+			ssh.Password(password),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         10 * time.Second,
+	}
+
+	addr := net.JoinHostPort(host, "22")
+	var lastErr error
+	for attempt := 1; attempt <= 5; attempt++ {
+		client, err := ssh.Dial("tcp", addr, config)
+		if err == nil {
+			client.Close()
+			return nil
+		}
+		lastErr = fmt.Errorf("password login failed (attempt %d/5): %w", attempt, err)
+		if attempt < 5 {
+			time.Sleep(5 * time.Second)
+		}
+	}
+	return lastErr
 }
 
 func shellEscapeTight(s string) string {
