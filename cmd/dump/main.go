@@ -9,7 +9,7 @@ import (
 
 func main() {
 	key := "b647bf795dddbcd6a38e529c416f1d0d064874f3a949a4f86ed4e1f3e07a08f4"
-	database, err := db.Open("data/provinci.db", key)
+	database, err := db.Open("data/provessor.db", key)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open: %v\n", err)
 		os.Exit(1)

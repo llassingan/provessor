@@ -457,7 +457,7 @@ func SSHCreateUser(host string, privateKeyPEM string, username string, password 
 	defer session.Close()
 
 	cmd := fmt.Sprintf(
-		"{ id -u %[1]s 2>/dev/null || useradd -m -s /bin/bash %[1]s; } && echo '%[1]s:%[2]s' | chpasswd && printf 'PasswordAuthentication yes\nChallengeResponseAuthentication yes\n' > /etc/ssh/sshd_config.d/99-provinci.conf && sshd -t && systemctl restart sshd && sshd -T | grep -i passwordauthentication",
+		"{ id -u %[1]s 2>/dev/null || useradd -m -s /bin/bash %[1]s; } && echo '%[1]s:%[2]s' | chpasswd && printf 'PasswordAuthentication yes\nChallengeResponseAuthentication yes\n' > /etc/ssh/sshd_config.d/99-provessor.conf && sshd -t && systemctl restart sshd && sshd -T | grep -i passwordauthentication",
 		shellEscapeTight(username),
 		shellEscapeTight(password),
 	)

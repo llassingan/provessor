@@ -26,7 +26,7 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	database, err := db.Open("data/provinci.db", cfg.DBEncryptionKey)
+	database, err := db.Open("data/provessor.db", cfg.DBEncryptionKey)
 	if err != nil {
 		log.Fatalf("database: %v", err)
 	}
@@ -41,7 +41,7 @@ func main() {
 		log.Fatalf("logger: %v", err)
 	}
 	defer appLogger.Close()
-	appLogger.Info("starting provinci", "dev", cfg.Dev, "log_file", cfg.LogFile)
+	appLogger.Info("starting provessor", "dev", cfg.Dev, "log_file", cfg.LogFile)
 
 	userRepo := repository.NewUserRepository(database)
 

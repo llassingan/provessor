@@ -7,7 +7,7 @@ services:
       - DB_ENCRYPTION_KEY=${DB_ENCRYPTION_KEY}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:10001}
       - DEV=${DEV:-}
-      - LOG_FILE=${LOG_FILE:-/app/logs/provinci.log}
+      - LOG_FILE=${LOG_FILE:-/app/logs/provessor.log}
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs

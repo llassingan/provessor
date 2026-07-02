@@ -16,7 +16,7 @@ export default function OnboardingModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
         <h2 className="text-lg font-semibold text-gray-900">
-          Welcome to Provinci
+          Welcome to Provessor
         </h2>
         <p className="mt-1 text-sm text-gray-500">
           Get your cloud infrastructure ready in three steps — or skip and
@@ -27,7 +27,7 @@ export default function OnboardingModal({
           <Step
             number={1}
             label="Add OCI Credentials"
-            description="Enter your Oracle Cloud credentials so Provinci can manage your resources."
+            description="Enter your Oracle Cloud credentials so Provessor can manage your resources."
           />
           <Step
             number={2}

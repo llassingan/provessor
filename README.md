@@ -1,8 +1,8 @@
-# Provinci
+# Provessor
 
-> Crafting Cloud VPS Provisioning like Da Vinci crafted masterpieces.
+> Cloud VPS provisioning, simplified.
 
-Provinci is a self-hosted VPS automation tool for cloud resellers. Spin up fully configured virtual machines from a clean admin dashboard — pick a template, customize specs, and launch. The VM phones home with credentials so you can hand them straight to your customer.
+Provessor is a self-hosted VPS automation tool for cloud admins. Spin up fully configured virtual machines from a clean admin dashboard — pick a template, customize specs, and launch. The VM phones home with credentials so you can hand them straight to your users.
 
 **BYOK** (Bring Your Own Keys): your cloud credentials live in an encrypted local database, never in plaintext env vars. No SaaS. No lock-in.
 
@@ -27,7 +27,7 @@ Built with a pluggable provisioning engine — currently targeting one cloud pla
 
 ## Prerequisites
 
-Before running Provinci, you need:
+Before running Provessor, you need:
 
 - **Docker** and **Docker Compose** (≥ v2)
 - **Go 1.25+** (for local development)
@@ -62,7 +62,7 @@ CORS_ORIGINS=https://yourdomain.id,http://localhost:10001
 | `DB_ENCRYPTION_KEY` | Yes | 64-char hex string (32 bytes). Master encryption key for the database. |
 | `CORS_ORIGINS` | No | Comma-separated allowed origins. Defaults to `http://localhost:5173,http://localhost:10001`. Set to your dashboard domain in production. |
 
-> **Warning**: `DB_ENCRYPTION_KEY` is the master encryption key. Without it, your database — including all cloud credentials and customer data — is irrecoverable. Back it up.
+> **Warning**: `DB_ENCRYPTION_KEY` is the master encryption key. Without it, your database — including all cloud credentials and user data — is irrecoverable. Back it up.
 
 ### 2. Start the API
 
@@ -106,7 +106,7 @@ Open `http://localhost:10001`. The Vite dev server proxies `/api` to the Go back
 1. **New VPS** → pick a template (WordPress, Node.js, Docker, or Ubuntu).
 2. Choose your shape, OCPU count, memory, and boot volume size.
 3. Click **Launch** — watch the live provisioning log stream via SSE.
-4. Once ready, copy the credentials and send them to your customer.
+4. Once ready, copy the credentials and send them to your users.
 
 ---
 
@@ -137,10 +137,10 @@ npm run build   # Production build
 npm run lint    # ESLint (strict rules)
 
 # Override API target (if BE is on a different host)
-VITE_API_TARGET=http://api-provinci.example.com npm run dev
+VITE_API_TARGET=http://api-provessor.example.com npm run dev
 
 # Production build pointing at external API
-VITE_API_BASE_URL=https://api-provinci.example.com/api npm run build
+VITE_API_BASE_URL=https://api-provessor.example.com/api npm run build
 ```
 
 ### Full rebuild from scratch
@@ -191,7 +191,7 @@ vps-store/
 
 ## Templates
 
-Provinci ships with four curated application stacks:
+Provessor ships with four curated application stacks:
 
 | Template | Stack |
 |----------|-------|
@@ -200,7 +200,7 @@ Provinci ships with four curated application stacks:
 | **Docker** | Docker CE + docker-compose + UFW |
 | **Ubuntu** | UFW + fail2ban + unattended-upgrades |
 
-Custom templates are also supported — paste your own Ansible playbook YAML in the dashboard and Provinci embeds it directly into cloud-init.
+Custom templates are also supported — paste your own Ansible playbook YAML in the dashboard and Provessor embeds it directly into cloud-init.
 
 ---
 

@@ -73,7 +73,7 @@ export default function Layout({
             P
           </div>
           <span className="text-lg font-semibold tracking-tight text-white">
-            Provinci
+            Provessor
           </span>
         </div>
 
