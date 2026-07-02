@@ -9,21 +9,27 @@ import (
 type EventBroker struct {
 	mu      sync.RWMutex
 	clients map[string]map[chan SSEEvent]struct{}
+	history map[string][]SSEEvent
+	maxHist int
 }
+
+const defaultMaxHistory = 50
 
 type SSEEvent struct {
 	InstanceID string `json:"instance_id"`
-	Type       string `json:"type"`   // "status", "error", "credentials"
-	Status     string `json:"status"` // "provisioning", "running", "failed"
-	Step       string `json:"step"`   // "launching_instance", "waiting_for_boot", "installing_apps", "ready"
+	Type       string `json:"type"`
+	Status     string `json:"status"`
+	Step       string `json:"step"`
 	Message    string `json:"message"`
 	Data       any    `json:"data"`
-	Timestamp  int64  `json:"timestamp"` // unix milliseconds
+	Timestamp  int64  `json:"timestamp"`
 }
 
 func NewEventBroker() *EventBroker {
 	return &EventBroker{
 		clients: make(map[string]map[chan SSEEvent]struct{}),
+		history: make(map[string][]SSEEvent),
+		maxHist: defaultMaxHistory,
 	}
 }
 
@@ -67,6 +73,13 @@ func (b *EventBroker) Publish(instanceID string, event SSEEvent) {
 		event.InstanceID = instanceID
 	}
 
+	b.mu.Lock()
+	b.history[instanceID] = append(b.history[instanceID], event)
+	if len(b.history[instanceID]) > b.maxHist {
+		b.history[instanceID] = b.history[instanceID][len(b.history[instanceID])-b.maxHist:]
+	}
+	b.mu.Unlock()
+
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
@@ -74,9 +87,20 @@ func (b *EventBroker) Publish(instanceID string, event SSEEvent) {
 		select {
 		case ch <- event:
 		default:
-			// drop for slow consumer
 		}
 	}
+}
+
+func (b *EventBroker) History(instanceID string) []SSEEvent {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	events := b.history[instanceID]
+	if events == nil {
+		return nil
+	}
+	cpy := make([]SSEEvent, len(events))
+	copy(cpy, events)
+	return cpy
 }
 
 func (b *EventBroker) Close() {

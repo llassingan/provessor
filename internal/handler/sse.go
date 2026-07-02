@@ -56,6 +56,16 @@ func (h *SSEHandler) streamEvents(w http.ResponseWriter, r *http.Request, channe
 	ch := h.broker.Subscribe(channelID)
 	defer h.broker.Unsubscribe(channelID, ch)
 
+	// Replay buffered history so reconnecting clients see the full log
+	for _, evt := range h.broker.History(channelID) {
+		data, err := json.Marshal(evt)
+		if err != nil {
+			continue
+		}
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+	}
+
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
 
@@ -71,11 +81,15 @@ func (h *SSEHandler) streamEvents(w http.ResponseWriter, r *http.Request, channe
 			if err != nil {
 				continue
 			}
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+				return
+			}
 			flusher.Flush()
 
 		case <-heartbeat.C:
-			fmt.Fprint(w, ": keepalive\n\n")
+			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
+				return
+			}
 			flusher.Flush()
 
 		case <-ctx.Done():
