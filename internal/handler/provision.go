@@ -21,6 +21,7 @@ type VPSHandler struct {
 	networkRepo      *repository.NetworkRepository
 	settingsRepo     *repository.SettingsRepository
 	provisionService *service.VPSProvisionService
+	jobQueue         *service.JobQueue
 }
 
 func NewVPSHandler(
@@ -29,6 +30,7 @@ func NewVPSHandler(
 	networkRepo *repository.NetworkRepository,
 	settingsRepo *repository.SettingsRepository,
 	provisionService *service.VPSProvisionService,
+	jobQueue *service.JobQueue,
 ) *VPSHandler {
 	return &VPSHandler{
 		vpsRepo:          vpsRepo,
@@ -36,6 +38,7 @@ func NewVPSHandler(
 		networkRepo:      networkRepo,
 		settingsRepo:     settingsRepo,
 		provisionService: provisionService,
+		jobQueue:         jobQueue,
 	}
 }
 
@@ -137,13 +140,8 @@ func (h *VPSHandler) HandleCreateVPS(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[DEBUG] create_vps: created vps id=%d display_name=%q shape=%s ocpu=%.1f mem=%.1f", created.ID, created.DisplayName, created.Shape, created.OCPU, created.MemoryGB)
 
-	if h.provisionService != nil {
-		go func() {
-			log.Printf("[DEBUG] provision_vps: starting provisioning for vps %d", created.ID)
-			if err := h.provisionService.ProvisionVPS(context.Background(), created.ID); err != nil {
-				log.Printf("[DEBUG] provision_vps: vps %d provisioning failed: %v", created.ID, err)
-			}
-		}()
+	if err := h.jobQueue.Enqueue(context.Background(), service.JobProvisionVPS, service.VPSJob{ID: created.ID}); err != nil {
+		log.Printf("[ERROR] provision_vps: enqueue failed for vps %d: %v", created.ID, err)
 	}
 
 	writeJSON(w, http.StatusOK, created)
@@ -210,28 +208,41 @@ func (h *VPSHandler) HandleTerminateVPS(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if vps.Status == "terminating" {
+		log.Printf("[DEBUG] terminate_vps: vps %d already terminating", id)
+		writeError(w, http.StatusConflict, "VPS termination is already in progress")
+		return
+	}
+
+	if err := h.vpsRepo.UpdateStatus(r.Context(), id, "terminating"); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update VPS status")
+		return
+	}
+
 	if vps.OCIInstanceID.Valid && vps.OCIInstanceID.String != "" && h.provisionService != nil {
 		region, err := h.provisionService.VPSRegionForDelete(r.Context(), id)
 		if err != nil {
 			log.Printf("[DEBUG] terminate_vps: cannot determine region for vps %d: %v", id, err)
+			_ = h.vpsRepo.UpdateStatus(r.Context(), id, vps.Status)
 			writeError(w, http.StatusInternalServerError, "failed to determine VPS region")
 			return
 		}
-		go func() {
-			log.Printf("[DEBUG] terminate_vps: terminating OCI instance %s in region %s", vps.OCIInstanceID.String, region)
-			if err := h.provisionService.TerminateInstance(context.Background(), id, region, vps.OCIInstanceID.String); err != nil {
-				log.Printf("[DEBUG] terminate_vps: terminate failed: %v", err)
-			}
-		}()
+		if err := h.jobQueue.Enqueue(context.Background(), service.JobTerminateVPS, service.TerminateJob{
+			ID:         id,
+			Region:     region,
+			InstanceID: vps.OCIInstanceID.String,
+		}); err != nil {
+			log.Printf("[ERROR] terminate_vps: enqueue failed for vps %d: %v", id, err)
+			_ = h.vpsRepo.UpdateStatus(r.Context(), id, vps.Status)
+			writeError(w, http.StatusInternalServerError, "failed to enqueue termination job")
+			return
+		}
+	} else {
+		_ = h.vpsRepo.UpdateStatus(r.Context(), id, "terminated")
 	}
 
-	if err := h.vpsRepo.UpdateStatus(r.Context(), id, "terminated"); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to terminate VPS")
-		return
-	}
-
-	log.Printf("[DEBUG] terminate_vps: vps %d terminated", id)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "terminated"})
+	log.Printf("[DEBUG] terminate_vps: vps %d termination queued", id)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "terminating"})
 }
 
 func (h *VPSHandler) HandleDeleteVPS(w http.ResponseWriter, r *http.Request) {
@@ -251,7 +262,7 @@ func (h *VPSHandler) HandleDeleteVPS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if vps.Status != "terminated" && vps.Status != "failed" {
+	if vps.Status != "terminated" {
 		writeError(w, http.StatusConflict, "VPS must be terminated before deleting. Terminate it first.")
 		return
 	}

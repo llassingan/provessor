@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"vps-store/internal/model"
@@ -17,14 +18,24 @@ func NewNetworkRepository(db *sql.DB) *NetworkRepository {
 	return &NetworkRepository{db: db}
 }
 
-const MaxNetworks = 5
+const MaxNetworks = 15
 
 var cidrBlocks = [][2]string{
-	{"10.0.0.0/16", "10.0.1.0/24"},
-	{"10.1.0.0/16", "10.1.1.0/24"},
-	{"10.2.0.0/16", "10.2.1.0/24"},
-	{"10.3.0.0/16", "10.3.1.0/24"},
-	{"10.4.0.0/16", "10.4.1.0/24"},
+	{"10.0.0.0/16", "10.0.0.0/20"},
+	{"10.1.0.0/16", "10.1.0.0/20"},
+	{"10.2.0.0/16", "10.2.0.0/20"},
+	{"10.3.0.0/16", "10.3.0.0/20"},
+	{"10.4.0.0/16", "10.4.0.0/20"},
+	{"10.5.0.0/16", "10.5.0.0/20"},
+	{"10.6.0.0/16", "10.6.0.0/20"},
+	{"10.7.0.0/16", "10.7.0.0/20"},
+	{"10.8.0.0/16", "10.8.0.0/20"},
+	{"10.9.0.0/16", "10.9.0.0/20"},
+	{"10.10.0.0/16", "10.10.0.0/20"},
+	{"10.11.0.0/16", "10.11.0.0/20"},
+	{"10.12.0.0/16", "10.12.0.0/20"},
+	{"10.13.0.0/16", "10.13.0.0/20"},
+	{"10.14.0.0/16", "10.14.0.0/20"},
 }
 
 func (r *NetworkRepository) Count(ctx context.Context) (int, error) {
@@ -85,7 +96,7 @@ func (r *NetworkRepository) Create(ctx context.Context, name, region string) (*m
 
 func (r *NetworkRepository) List(ctx context.Context) ([]model.Network, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, name, region, cidr_vcn, cidr_subnet, vcn_ocid, subnet_ocid, status, created_at, updated_at
+		`SELECT id, name, region, cidr_vcn, cidr_subnet, vcn_ocid, subnet_ocid, status, provider, provisioning_state, created_at, updated_at
 		 FROM networks ORDER BY id ASC`,
 	)
 	if err != nil {
@@ -97,7 +108,7 @@ func (r *NetworkRepository) List(ctx context.Context) ([]model.Network, error) {
 	for rows.Next() {
 		var n model.Network
 		if err := rows.Scan(&n.ID, &n.Name, &n.Region, &n.CIDRVCN, &n.CIDRSubnet,
-			&n.VCNOCID, &n.SubnetOCID, &n.Status, &n.CreatedAt, &n.UpdatedAt); err != nil {
+			&n.VCNOCID, &n.SubnetOCID, &n.Status, &n.Provider, &n.ProvisioningState, &n.CreatedAt, &n.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan network: %w", err)
 		}
 		networks = append(networks, n)
@@ -109,13 +120,44 @@ func (r *NetworkRepository) List(ctx context.Context) ([]model.Network, error) {
 	return networks, rows.Err()
 }
 
+func (r *NetworkRepository) ListByStatus(ctx context.Context, statuses []string) ([]model.Network, error) {
+	if len(statuses) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(statuses))
+	args := make([]interface{}, len(statuses))
+	for i, s := range statuses {
+		placeholders[i] = "?"
+		args[i] = s
+	}
+	query := "SELECT id, name, region, cidr_vcn, cidr_subnet, vcn_ocid, subnet_ocid, status, provider, provisioning_state, created_at, updated_at FROM networks WHERE status IN (" + strings.Join(placeholders, ",") + ") ORDER BY id ASC"
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var networks []model.Network
+	for rows.Next() {
+		var n model.Network
+		if err := rows.Scan(&n.ID, &n.Name, &n.Region, &n.CIDRVCN, &n.CIDRSubnet,
+			&n.VCNOCID, &n.SubnetOCID, &n.Status, &n.Provider, &n.ProvisioningState, &n.CreatedAt, &n.UpdatedAt); err != nil {
+			return nil, err
+		}
+		networks = append(networks, n)
+	}
+	if networks == nil {
+		networks = []model.Network{}
+	}
+	return networks, rows.Err()
+}
+
 func (r *NetworkRepository) Get(ctx context.Context, id int64) (*model.Network, error) {
 	var n model.Network
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, name, region, cidr_vcn, cidr_subnet, vcn_ocid, subnet_ocid, status, created_at, updated_at
+		`SELECT id, name, region, cidr_vcn, cidr_subnet, vcn_ocid, subnet_ocid, status, provider, provisioning_state, created_at, updated_at
 		 FROM networks WHERE id = ?`, id,
 	).Scan(&n.ID, &n.Name, &n.Region, &n.CIDRVCN, &n.CIDRSubnet,
-		&n.VCNOCID, &n.SubnetOCID, &n.Status, &n.CreatedAt, &n.UpdatedAt,
+		&n.VCNOCID, &n.SubnetOCID, &n.Status, &n.Provider, &n.ProvisioningState, &n.CreatedAt, &n.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -163,4 +205,9 @@ func (r *NetworkRepository) CountVPS(ctx context.Context, id int64) (int, error)
 		"SELECT COUNT(*) FROM vps WHERE network_id = ?", id,
 	).Scan(&count)
 	return count, err
+}
+
+func (r *NetworkRepository) UpdateProvisioningState(ctx context.Context, id int64, state string) error {
+	_, err := r.db.ExecContext(ctx, "UPDATE networks SET provisioning_state = ?, updated_at = ? WHERE id = ?", state, time.Now().UTC(), id)
+	return err
 }

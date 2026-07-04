@@ -1,0 +1,1 @@
+-- SQLite cannot DROP COLUMN cleanly; leave columns in place.

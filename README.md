@@ -19,7 +19,7 @@ Built with a pluggable provisioning engine — currently targeting one cloud pla
 | **Auth** | bcrypt + AES-256-GCM encrypted session tokens |
 | **Realtime** | SSE (Server-Sent Events) for provisioning status |
 | **Frontend** | React 18 · TypeScript (strict) · Tailwind CSS v4 · Vite |
-| **Infra-as-Code** | Terraform for network bootstrap |
+| **Network** | OCI Go SDK (native) |
 | **Config Mgmt** | Ansible via cloud-init (`cc_ansible` + custom `write_files`) |
 | **Container** | Docker Compose (single Go API container) |
 
@@ -33,7 +33,6 @@ Before running Provessor, you need:
 - **Go 1.25+** (for local development)
 - **Node.js 20+** (for the dashboard dev server)
 - A cloud account with API credentials (region, compartment/project, key pair)
-- **Terraform ≥ 1.5** — used for one-time network provisioning from the Settings page
 
 ---
 
@@ -98,7 +97,7 @@ Open `http://localhost:10001`. The Vite dev server proxies `/api` to the Go back
 
 1. Visit the dashboard — create your admin account (email + password).
 2. Go to **Settings** → enter your cloud API credentials.
-3. Click **Set up now** to provision networking infrastructure (Terraform, one-time).
+3. Click **Set up now** to provision networking infrastructure (OCI SDK, one-time).
 4. Return to the dashboard and create your first VPS.
 
 ### 5. Provision a VPS
@@ -172,7 +171,6 @@ vps-store/
 ├── ansible/                     # Playbooks + cloud-init templates
 │   ├── templates/               # WordPress, Node.js, Docker, Ubuntu
 │   └── cloud-init/              # cc_ansible YAMLs for each stack
-├── terraform/                   # Network bootstrap (one-time)
 ├── docker-compose.yml           # Production-like local dev
 └── Makefile                     # Build, test, lint, docker
 ```
@@ -185,7 +183,7 @@ vps-store/
 - **Credentials**: cloud API keys are stored in the encrypted database, entered through the Settings UI. They are never logged and never exposed in API responses.
 - **Sessions**: AES-256-GCM encrypted tokens with random 12-byte nonces per token. HttpOnly cookies with `SameSite=Lax`.
 - **Passwords**: bcrypt with cost factor 12.
-- **VM communication**: instances phone home via a bearer token. No inbound SSH required — the security list exposes only HTTP (80) and HTTPS (443).
+- **VM communication**: instances phone home via a bearer token. SSH (port 22) is intentionally open in the VCN security list as a **recovery backdoor** — root password login is disabled (`PermitRootLogin prohibit-password` in cloud-init), only key-based root access works. The API server holds the SSH private key for emergency recovery. fail2ban is installed by default to mitigate brute-force attempts. Per-VPS firewall rules (HTTP/HTTPS + user rules) are enforced via Network Security Groups — independent per instance.
 
 ---
 
@@ -226,7 +224,7 @@ Custom templates are also supported — paste your own Ansible playbook YAML in 
                                ┌───────▼────┐            ┌──────────▼──────────┐
                                │  SQLite DB  │            │ Cloud Provider       │
                                │  (encrypted)│            │ ┌──────────────────┐ │
-                               │  local file  │            │ │  Network (TF)    │ │ once
+                               │  local file  │            │ │  Network (OCI SDK)│ │ once
                                │  .env=key   │            │ └──────────────────┘ │
                                └────────────┘            │ ┌──────────────────┐ │
                                                           │ │  Compute VMs      │ │

@@ -22,6 +22,7 @@ type NetworkHandler struct {
 	settingsRepo *repository.SettingsRepository
 	sseHandler   *SSEHandler
 	broker       *sse.EventBroker
+	jobQueue     *service.JobQueue
 }
 
 func NewNetworkHandler(
@@ -30,6 +31,7 @@ func NewNetworkHandler(
 	settingsRepo *repository.SettingsRepository,
 	sseHandler *SSEHandler,
 	broker *sse.EventBroker,
+	jobQueue *service.JobQueue,
 ) *NetworkHandler {
 	return &NetworkHandler{
 		service:      service,
@@ -37,6 +39,7 @@ func NewNetworkHandler(
 		settingsRepo: settingsRepo,
 		sseHandler:   sseHandler,
 		broker:       broker,
+		jobQueue:     jobQueue,
 	}
 }
 
@@ -153,11 +156,13 @@ func (h *NetworkHandler) HandleNetworkProvision(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	go func() {
-		_ = h.service.ProvisionNetwork(context.Background(), id)
-	}()
+	if err := h.jobQueue.Enqueue(context.Background(), service.JobProvisionNetwork, service.NetworkJob{ID: id}); err != nil {
+		log.Printf("[ERROR] network_provision: enqueue failed for network %d: %v", id, err)
+		http.Error(w, "failed to queue provisioning", http.StatusInternalServerError)
+		return
+	}
 
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "network_provisioning_started"})
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "network_provisioning_queued"})
 }
 
 func (h *NetworkHandler) HandleNetworkProvisionEvents(w http.ResponseWriter, r *http.Request) {

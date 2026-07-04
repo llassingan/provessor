@@ -21,6 +21,9 @@ type VPS struct {
 	SSHPrivateKey      NullString `json:"-"`
 	SSHUsername        NullString `json:"ssh_username"`
 	SSHPassword        NullString `json:"ssh_password"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	NSGID             string    `json:"nsg_id"`
+	Provider          string    `json:"provider"`
+	ProvisioningState string    `json:"provisioning_state"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }

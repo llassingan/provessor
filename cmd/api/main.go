@@ -59,20 +59,44 @@ func main() {
 	settingsHandler := handler.NewSettingsHandler(settingsRepo)
 
 	networkRepo := repository.NewNetworkRepository(database)
+	networkResourceRepo := repository.NewNetworkResourceRepository(database)
 	templateRepo := repository.NewTemplateRepository(database)
 	templateHandler := handler.NewTemplateHandler(templateRepo)
-	networkService := service.NewNetworkService(settingsRepo, networkRepo, broker, "terraform", appLogger)
-	networkHandler := handler.NewNetworkHandler(networkService, networkRepo, settingsRepo, sseHandler, broker)
+	ociComputeService := service.NewOCIComputeService(settingsRepo, appLogger)
+	networkService := service.NewNetworkService(settingsRepo, networkRepo, networkResourceRepo, ociComputeService, broker, appLogger)
 
 	vpsRepo := repository.NewVPSRepository(database)
-	ociComputeService := service.NewOCIComputeService(settingsRepo, appLogger)
-	vpsProvisionService := service.NewVPSProvisionService(ociComputeService, vpsRepo, networkRepo, templateRepo, broker, settingsRepo, cfg.APIURL)
-	vpsHandler := handler.NewVPSHandler(vpsRepo, templateRepo, networkRepo, settingsRepo, vpsProvisionService)
+
+	vpsResourceRepo := repository.NewVPSResourceRepository(database)
+	auditLogRepo := repository.NewAuditLogRepository(database)
+	_ = auditLogRepo // wired into services in Phase 9; held at server level for now
+	vpsProvisionService := service.NewVPSProvisionService(ociComputeService, vpsRepo, vpsResourceRepo, networkRepo, templateRepo, broker, settingsRepo, cfg.APIURL)
+
+	jobQueue := service.NewJobQueue(database, networkService, vpsProvisionService)
+
+	networkHandler := handler.NewNetworkHandler(networkService, networkRepo, settingsRepo, sseHandler, broker, jobQueue)
+	vpsHandler := handler.NewVPSHandler(vpsRepo, templateRepo, networkRepo, settingsRepo, vpsProvisionService, jobQueue)
 
 	srv := server.New(
 		database, cfg, authService, broker,
 		sseHandler, settingsHandler, templateHandler, networkHandler, vpsHandler,
 	)
+
+	reconcileService := service.NewReconcileService(
+		networkRepo, vpsRepo, networkResourceRepo, vpsResourceRepo,
+		ociComputeService, networkService, vpsProvisionService, broker,
+	)
+	if err := reconcileService.ReconcileOnStartup(context.Background()); err != nil {
+		appLogger.Warn("startup_reconciliation_failed", "error", err)
+	} else {
+		appLogger.Info("startup_reconciliation_complete")
+	}
+
+	if err := jobQueue.ResumeOnStartup(context.Background()); err != nil {
+		appLogger.Warn("jobqueue_resume_failed", "error", err)
+	}
+
+	jobQueue.Start(context.Background())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -94,6 +118,8 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("shutdown: %v", err)
 	}
+
+	jobQueue.Stop()
 
 	fmt.Println("server stopped")
 }

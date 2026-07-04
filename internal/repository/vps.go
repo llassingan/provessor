@@ -44,12 +44,14 @@ func (r *VPSRepository) List(ctx context.Context, status string) ([]model.VPS, e
 	if status != "" {
 		rows, err = r.db.QueryContext(ctx,
 			`SELECT id, display_name, template_id, network_id, shape, ocpu, memory_gb, boot_volume_size_gb,
-				oci_instance_id, public_ip, private_ip, status, initial_credentials, ssh_username, ssh_password, created_at, updated_at
+				oci_instance_id, public_ip, private_ip, status, initial_credentials, ssh_username, ssh_password,
+				nsg_id, provider, provisioning_state, created_at, updated_at
 			FROM vps WHERE status = ? ORDER BY created_at DESC`, status)
 	} else {
 		rows, err = r.db.QueryContext(ctx,
 			`SELECT id, display_name, template_id, network_id, shape, ocpu, memory_gb, boot_volume_size_gb,
-				oci_instance_id, public_ip, private_ip, status, initial_credentials, ssh_username, ssh_password, created_at, updated_at
+				oci_instance_id, public_ip, private_ip, status, initial_credentials, ssh_username, ssh_password,
+				nsg_id, provider, provisioning_state, created_at, updated_at
 			FROM vps ORDER BY created_at DESC`)
 	}
 	if err != nil {
@@ -64,6 +66,7 @@ func (r *VPSRepository) List(ctx context.Context, status string) ([]model.VPS, e
 			&v.ID, &v.DisplayName, &v.TemplateID, &v.NetworkID, &v.Shape, &v.OCPU, &v.MemoryGB, &v.BootVolumeSizeGB,
 			&v.OCIInstanceID, &v.PublicIP, &v.PrivateIP, &v.Status, &v.InitialCredentials,
 			&v.SSHUsername, &v.SSHPassword,
+			&v.NSGID, &v.Provider, &v.ProvisioningState,
 			&v.CreatedAt, &v.UpdatedAt,
 		)
 		if err != nil {
@@ -82,12 +85,14 @@ func (r *VPSRepository) Get(ctx context.Context, id int64) (*model.VPS, error) {
 	var v model.VPS
 	err := r.db.QueryRowContext(ctx,
 		`SELECT id, display_name, template_id, network_id, shape, ocpu, memory_gb, boot_volume_size_gb,
-			oci_instance_id, public_ip, private_ip, status, initial_credentials, ssh_private_key, ssh_username, ssh_password, created_at, updated_at
+			oci_instance_id, public_ip, private_ip, status, initial_credentials, ssh_private_key, ssh_username, ssh_password,
+			nsg_id, provider, provisioning_state, created_at, updated_at
 		FROM vps WHERE id = ?`, id,
 	).Scan(
 		&v.ID, &v.DisplayName, &v.TemplateID, &v.NetworkID, &v.Shape, &v.OCPU, &v.MemoryGB, &v.BootVolumeSizeGB,
 		&v.OCIInstanceID, &v.PublicIP, &v.PrivateIP, &v.Status, &v.InitialCredentials,
 		&v.SSHPrivateKey, &v.SSHUsername, &v.SSHPassword,
+		&v.NSGID, &v.Provider, &v.ProvisioningState,
 		&v.CreatedAt, &v.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -101,15 +106,27 @@ func (r *VPSRepository) Get(ctx context.Context, id int64) (*model.VPS, error) {
 
 func (r *VPSRepository) Update(ctx context.Context, vps *model.VPS) error {
 	query := `UPDATE vps SET display_name=?, template_id=?, network_id=?, shape=?, ocpu=?, memory_gb=?, boot_volume_size_gb=?,
-		oci_instance_id=?, public_ip=?, private_ip=?, status=?, initial_credentials=?, ssh_private_key=?, ssh_username=?, ssh_password=?, updated_at=?
+		oci_instance_id=?, public_ip=?, private_ip=?, status=?, initial_credentials=?, ssh_private_key=?, ssh_username=?, ssh_password=?,
+		nsg_id=?, provider=?, provisioning_state=?, updated_at=?
 		WHERE id=?`
 
 	_, err := r.db.ExecContext(ctx, query,
 		vps.DisplayName, vps.TemplateID, vps.NetworkID, vps.Shape, vps.OCPU, vps.MemoryGB, vps.BootVolumeSizeGB,
 		vps.OCIInstanceID, vps.PublicIP, vps.PrivateIP, vps.Status, vps.InitialCredentials,
 		vps.SSHPrivateKey, vps.SSHUsername, vps.SSHPassword,
+		vps.NSGID, vps.Provider, vps.ProvisioningState,
 		time.Now().UTC(), vps.ID,
 	)
+	return err
+}
+
+func (r *VPSRepository) UpdateProvisioningState(ctx context.Context, id int64, state string) error {
+	_, err := r.db.ExecContext(ctx, "UPDATE vps SET provisioning_state = ? WHERE id = ?", state, id)
+	return err
+}
+
+func (r *VPSRepository) UpdateNSGID(ctx context.Context, id int64, nsgID string) error {
+	_, err := r.db.ExecContext(ctx, "UPDATE vps SET nsg_id = ? WHERE id = ?", nsgID, id)
 	return err
 }
 

@@ -6,12 +6,7 @@ opencode.json
 .env.*
 !.env.example
 **/node_modules
-# Terraform
-**/.terraform/
-*.tfstate
-*.tfstate.*
-terraform.tfvars
-!terraform/terraform.tfvars.example
+
 *.db
 *.db-*
 
