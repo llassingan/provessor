@@ -783,6 +783,61 @@ func (s *OCIComputeService) waitForSubnetAvailable(ctx context.Context, region, 
 	}
 }
 
+func (s *OCIComputeService) waitForRouteTableCleared(ctx context.Context, region, rtID string, igwOCIDs map[string]bool, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		rt, err := s.GetRouteTable(ctx, region, rtID)
+		if err != nil {
+			return fmt.Errorf("wait route table: %w", err)
+		}
+		stillRefs := false
+		if igwOCIDs == nil {
+			stillRefs = len(rt.RouteRules) > 0
+		} else {
+			for _, rule := range rt.RouteRules {
+				if rule.NetworkEntityId != nil && igwOCIDs[*rule.NetworkEntityId] {
+					stillRefs = true
+					break
+				}
+			}
+		}
+		if !stillRefs {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return fmt.Errorf("route table %s still has routes after %v", maskOCID(rtID), timeout)
+}
+
+func (s *OCIComputeService) WaitForSubnetTerminated(ctx context.Context, region, ocid string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("get network client: %w", err)
+	}
+	for time.Now().Before(deadline) {
+		resp, err := client.GetSubnet(ctx, core.GetSubnetRequest{
+			SubnetId: common.String(ocid),
+		})
+		if err != nil {
+			return fmt.Errorf("wait subnet terminated: %w", err)
+		}
+		if resp.LifecycleState == core.SubnetLifecycleStateTerminated {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
+	}
+	return fmt.Errorf("subnet %s not terminated after %v", maskOCID(ocid), timeout)
+}
+
 func (s *OCIComputeService) DeleteSubnet(ctx context.Context, region, ocid string) error {
 	client, err := s.GetNetworkClient(ctx, region)
 	if err != nil {
