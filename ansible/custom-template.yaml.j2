@@ -10,9 +10,16 @@ write_files:
       [defaults]
       inventory = localhost,
       host_key_checking = False
+  - path: /etc/ssh/sshd_config.d/50-provessor.conf
+    permissions: '0644'
+    content: |
+      PermitRootLogin prohibit-password
 
 runcmd:
-  - apt-get update && apt-get install -y ansible-core
+  - apt-get update && apt-get install -y ansible-core fail2ban
+  - systemctl enable fail2ban
+  - systemctl start fail2ban
+  - systemctl reload ssh
   - ansible-playbook -c local /home/ubuntu/playbook-site.yml
   - mkdir -p /root/.vpsstore
   - |

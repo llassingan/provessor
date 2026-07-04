@@ -14,7 +14,6 @@
       apt:
         name:
           - ufw
-          - fail2ban
           - unattended-upgrades
           - apt-listchanges
         state: present
@@ -34,24 +33,6 @@
         state: enabled
         policy: deny
         direction: incoming
-
-    - name: Configure fail2ban
-      copy:
-        dest: /etc/fail2ban/jail.local
-        content: |
-          [sshd]
-          enabled = true
-          port = 22
-          filter = sshd
-          logpath = /var/log/auth.log
-          maxretry = 5
-          bantime = 3600
-
-    - name: Start and enable fail2ban
-      systemd:
-        name: fail2ban
-        state: restarted
-        enabled: true
 
     - name: Configure unattended-upgrades
       copy:
