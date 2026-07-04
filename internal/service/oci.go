@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -223,6 +224,8 @@ type LaunchInstanceParams struct {
 	MemoryGB           float64
 	BootVolumeSizeGB   int
 	CloudInitYAML      string
+	NSGID              string
+	SSHPublicKey       string
 }
 
 func (s *OCIComputeService) LaunchInstance(ctx context.Context, params LaunchInstanceParams) (string, error) {
@@ -263,18 +266,29 @@ func (s *OCIComputeService) LaunchInstance(ctx context.Context, params LaunchIns
 
 	s.log.Debug("oci_launching_instance", "display_name", params.DisplayName, "shape", params.Shape, "ad", ad, "subnet", maskOCID(params.SubnetOCID))
 
+	var nsgIDs []string
+	if params.NSGID != "" {
+		nsgIDs = []string{params.NSGID}
+	}
+
+	metadata := map[string]string{
+		"user_data": userDataB64,
+	}
+	if params.SSHPublicKey != "" {
+		metadata["ssh_authorized_keys"] = params.SSHPublicKey
+	}
+
 	request := core.LaunchInstanceRequest{
 		LaunchInstanceDetails: core.LaunchInstanceDetails{
 			AvailabilityDomain: adPtr,
 			CompartmentId:      common.String(params.CompartmentOCID),
 			DisplayName:        common.String(params.DisplayName),
 			Shape:              common.String(params.Shape),
-			Metadata: map[string]string{
-				"user_data": userDataB64,
-			},
+			Metadata:           metadata,
 			CreateVnicDetails: &core.CreateVnicDetails{
 				SubnetId:       common.String(params.SubnetOCID),
 				AssignPublicIp: common.Bool(true),
+				NsgIds:         nsgIDs,
 			},
 			SourceDetails: core.InstanceSourceViaImageDetails{
 				ImageId:             imageID,
@@ -395,8 +409,35 @@ func (s *OCIComputeService) TerminateInstance(ctx context.Context, region, insta
 		s.log.Error("oci_terminate_instance_failed", "instance_id", instanceID, "error", err)
 		return fmt.Errorf("terminate instance: %w", err)
 	}
+	if werr := s.waitForInstanceTerminated(ctx, region, instanceID, 5*time.Minute); werr != nil {
+		s.log.Warn("oci_wait_for_terminated_failed", "instance_id", instanceID, "error", werr)
+	}
 	s.log.Debug("oci_instance_terminated", "instance_id", instanceID)
 	return nil
+}
+
+// waitForInstanceTerminated polls GetInstance until LifecycleState == TERMINATED.
+// OCI's TerminateInstance API is async (returns 202 immediately); the VNIC
+// stays attached to any NSG until the instance reaches TERMINATED. Callers that
+// delete the NSG right after TerminateInstance must wait for this, otherwise
+// OCI rejects with 412 PreconditionFailed ("NSG still has vnics attached").
+func (s *OCIComputeService) waitForInstanceTerminated(ctx context.Context, region, instanceID string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		inst, err := s.GetInstance(ctx, region, instanceID)
+		if err != nil {
+			return err
+		}
+		if inst.LifecycleState == core.InstanceLifecycleStateTerminated {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+		}
+	}
+	return fmt.Errorf("instance %s not terminated after %v", maskOCID(instanceID), timeout)
 }
 
 // GenerateSSHKeyPair generates an RSA 4096 key pair.
@@ -435,7 +476,7 @@ func SSHCreateUser(host string, privateKeyPEM string, username string, password 
 	}
 
 	config := &ssh.ClientConfig{
-		User: "root",
+		User: "ubuntu",
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signer),
 		},
@@ -456,11 +497,12 @@ func SSHCreateUser(host string, privateKeyPEM string, username string, password 
 	}
 	defer session.Close()
 
-	cmd := fmt.Sprintf(
+	innerCmd := fmt.Sprintf(
 		"{ id -u %[1]s 2>/dev/null || useradd -m -s /bin/bash %[1]s; } && echo '%[1]s:%[2]s' | chpasswd && printf 'PasswordAuthentication yes\nChallengeResponseAuthentication yes\n' > /etc/ssh/sshd_config.d/99-provessor.conf && sshd -t && systemctl restart sshd && sshd -T | grep -i passwordauthentication",
 		shellEscapeTight(username),
 		shellEscapeTight(password),
 	)
+	cmd := fmt.Sprintf("sudo bash -c '%s'", strings.ReplaceAll(innerCmd, "'", `'\''`))
 
 	out, err := session.CombinedOutput(cmd)
 	if err != nil {
@@ -478,6 +520,16 @@ func SSHVerifyPasswordLogin(host string, username string, password string) error
 		User: username,
 		Auth: []ssh.AuthMethod{
 			ssh.Password(password),
+			ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) ([]string, error) {
+				if len(questions) == 0 {
+					return []string{}, nil
+				}
+				answers := make([]string, len(questions))
+				for i := range questions {
+					answers[i] = password
+				}
+				return answers, nil
+			}),
 		},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         10 * time.Second,
@@ -510,4 +562,397 @@ func shellEscapeTight(s string) string {
 		}
 	}
 	return string(result)
+}
+
+// ── Network SDK methods (VirtualNetworkClient) ─────────────────────────
+
+func managedTags(networkID int64) map[string]string {
+	return map[string]string{
+		"provessor:managed":    "true",
+		"provessor:network_id": strconv.FormatInt(networkID, 10),
+	}
+}
+
+func vpsManagedTags(vpsID int64) map[string]string {
+	return map[string]string{
+		"provessor:managed": "true",
+		"provessor:vps_id":  strconv.FormatInt(vpsID, 10),
+	}
+}
+
+func (s *OCIComputeService) CreateVCN(ctx context.Context, region, compartmentID, displayName, cidrBlock, dnsLabel string, networkID int64) (string, error) {
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return "", fmt.Errorf("get network client: %w", err)
+	}
+	resp, err := client.CreateVcn(ctx, core.CreateVcnRequest{
+		CreateVcnDetails: core.CreateVcnDetails{
+			CompartmentId: common.String(compartmentID),
+			CidrBlock:     common.String(cidrBlock),
+			DisplayName:   common.String(displayName),
+			DnsLabel:      common.String(dnsLabel),
+			FreeformTags:  managedTags(networkID),
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("create vcn: %w", err)
+	}
+	if err := s.waitForVcnAvailable(ctx, region, *resp.Id); err != nil {
+		return "", err
+	}
+	return *resp.Id, nil
+}
+
+func (s *OCIComputeService) waitForVcnAvailable(ctx context.Context, region, ocid string) error {
+	deadline := time.Now().Add(5 * time.Minute)
+	for {
+		vcn, err := s.GetVCN(ctx, region, ocid)
+		if err != nil {
+			return fmt.Errorf("wait vcn available: %w", err)
+		}
+		if vcn.LifecycleState == core.VcnLifecycleStateAvailable {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("vcn %s not available after 5m", maskOCID(ocid))
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
+	}
+}
+
+func (s *OCIComputeService) GetVCN(ctx context.Context, region, ocid string) (core.Vcn, error) {
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return core.Vcn{}, fmt.Errorf("get network client: %w", err)
+	}
+	resp, err := client.GetVcn(ctx, core.GetVcnRequest{
+		VcnId: common.String(ocid),
+	})
+	if err != nil {
+		return core.Vcn{}, fmt.Errorf("get vcn: %w", err)
+	}
+	return resp.Vcn, nil
+}
+
+func (s *OCIComputeService) DeleteVCN(ctx context.Context, region, ocid string) error {
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("get network client: %w", err)
+	}
+	_, err = client.DeleteVcn(ctx, core.DeleteVcnRequest{
+		VcnId: common.String(ocid),
+	})
+	if err != nil {
+		return fmt.Errorf("delete vcn: %w", err)
+	}
+	return nil
+}
+
+func (s *OCIComputeService) ListVcns(ctx context.Context, region, compartmentID string) ([]core.Vcn, error) {
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return nil, fmt.Errorf("get network client: %w", err)
+	}
+	resp, err := client.ListVcns(ctx, core.ListVcnsRequest{
+		CompartmentId: common.String(compartmentID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list vcns: %w", err)
+	}
+	return resp.Items, nil
+}
+
+func (s *OCIComputeService) CreateInternetGateway(ctx context.Context, region, compartmentID, vcnID, displayName string, networkID int64) (string, error) {
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return "", fmt.Errorf("get network client: %w", err)
+	}
+	resp, err := client.CreateInternetGateway(ctx, core.CreateInternetGatewayRequest{
+		CreateInternetGatewayDetails: core.CreateInternetGatewayDetails{
+			CompartmentId: common.String(compartmentID),
+			VcnId:         common.String(vcnID),
+			IsEnabled:     common.Bool(true),
+			DisplayName:   common.String(displayName),
+			FreeformTags:  managedTags(networkID),
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("create internet gateway: %w", err)
+	}
+	return *resp.Id, nil
+}
+
+func (s *OCIComputeService) DeleteInternetGateway(ctx context.Context, region, ocid string) error {
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("get network client: %w", err)
+	}
+	_, err = client.DeleteInternetGateway(ctx, core.DeleteInternetGatewayRequest{
+		IgId: common.String(ocid),
+	})
+	if err != nil {
+		return fmt.Errorf("delete internet gateway: %w", err)
+	}
+	return nil
+}
+
+func (s *OCIComputeService) GetRouteTable(ctx context.Context, region, ocid string) (core.RouteTable, error) {
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return core.RouteTable{}, fmt.Errorf("get network client: %w", err)
+	}
+	resp, err := client.GetRouteTable(ctx, core.GetRouteTableRequest{
+		RtId: common.String(ocid),
+	})
+	if err != nil {
+		return core.RouteTable{}, fmt.Errorf("get route table: %w", err)
+	}
+	return resp.RouteTable, nil
+}
+
+func (s *OCIComputeService) UpdateRouteTable(ctx context.Context, region, rtOCID string, rules []core.RouteRule) error {
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("get network client: %w", err)
+	}
+	_, err = client.UpdateRouteTable(ctx, core.UpdateRouteTableRequest{
+		RtId: common.String(rtOCID),
+		UpdateRouteTableDetails: core.UpdateRouteTableDetails{
+			RouteRules: rules,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("update route table: %w", err)
+	}
+	return nil
+}
+
+func (s *OCIComputeService) CreateSubnet(ctx context.Context, region, compartmentID, vcnID, displayName, cidrBlock, dnsLabel, securityListID string, networkID int64) (string, error) {
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return "", fmt.Errorf("get network client: %w", err)
+	}
+	resp, err := client.CreateSubnet(ctx, core.CreateSubnetRequest{
+		CreateSubnetDetails: core.CreateSubnetDetails{
+			CompartmentId:   common.String(compartmentID),
+			VcnId:           common.String(vcnID),
+			CidrBlock:       common.String(cidrBlock),
+			DisplayName:     common.String(displayName),
+			DnsLabel:        common.String(dnsLabel),
+			SecurityListIds: []string{securityListID},
+			FreeformTags:    managedTags(networkID),
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("create subnet: %w", err)
+	}
+	if err := s.waitForSubnetAvailable(ctx, region, *resp.Id); err != nil {
+		return "", err
+	}
+	return *resp.Id, nil
+}
+
+func (s *OCIComputeService) waitForSubnetAvailable(ctx context.Context, region, ocid string) error {
+	deadline := time.Now().Add(5 * time.Minute)
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("get network client: %w", err)
+	}
+	for {
+		resp, err := client.GetSubnet(ctx, core.GetSubnetRequest{
+			SubnetId: common.String(ocid),
+		})
+		if err != nil {
+			return fmt.Errorf("wait subnet available: %w", err)
+		}
+		if resp.LifecycleState == core.SubnetLifecycleStateAvailable {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("subnet %s not available after 5m", maskOCID(ocid))
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
+	}
+}
+
+func (s *OCIComputeService) DeleteSubnet(ctx context.Context, region, ocid string) error {
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("get network client: %w", err)
+	}
+	_, err = client.DeleteSubnet(ctx, core.DeleteSubnetRequest{
+		SubnetId: common.String(ocid),
+	})
+	if err != nil {
+		return fmt.Errorf("delete subnet: %w", err)
+	}
+	return nil
+}
+
+func (s *OCIComputeService) CreateSecurityList(ctx context.Context, region, compartmentID, vcnID, displayName string, networkID int64) (string, error) {
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return "", fmt.Errorf("get network client: %w", err)
+	}
+	resp, err := client.CreateSecurityList(ctx, core.CreateSecurityListRequest{
+		CreateSecurityListDetails: core.CreateSecurityListDetails{
+			CompartmentId: common.String(compartmentID),
+			VcnId:         common.String(vcnID),
+			DisplayName:   common.String(displayName),
+			IngressSecurityRules: []core.IngressSecurityRule{
+				{
+					Protocol:    common.String("6"),
+					Source:      common.String("0.0.0.0/0"),
+					SourceType:  core.IngressSecurityRuleSourceTypeCidrBlock,
+					TcpOptions: &core.TcpOptions{
+						DestinationPortRange: &core.PortRange{
+							Min: common.Int(22),
+							Max: common.Int(22),
+						},
+					},
+				},
+			},
+			EgressSecurityRules: []core.EgressSecurityRule{
+				{
+					Protocol:        common.String("all"),
+					Destination:     common.String("0.0.0.0/0"),
+					DestinationType: core.EgressSecurityRuleDestinationTypeCidrBlock,
+				},
+			},
+			FreeformTags: managedTags(networkID),
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("create security list: %w", err)
+	}
+	return *resp.Id, nil
+}
+
+func (s *OCIComputeService) DeleteSecurityList(ctx context.Context, region, ocid string) error {
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("get network client: %w", err)
+	}
+	_, err = client.DeleteSecurityList(ctx, core.DeleteSecurityListRequest{
+		SecurityListId: common.String(ocid),
+	})
+	if err != nil {
+		return fmt.Errorf("delete security list: %w", err)
+	}
+	return nil
+}
+
+func (s *OCIComputeService) ListSecurityListsByVCN(ctx context.Context, region, compartmentID, vcnID string) ([]core.SecurityList, error) {
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return nil, fmt.Errorf("get network client: %w", err)
+	}
+	resp, err := client.ListSecurityLists(ctx, core.ListSecurityListsRequest{
+		CompartmentId: common.String(compartmentID),
+		VcnId:         common.String(vcnID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list security lists: %w", err)
+	}
+	return resp.Items, nil
+}
+
+func (s *OCIComputeService) ListInternetGatewaysByVCN(ctx context.Context, region, compartmentID, vcnID string) ([]core.InternetGateway, error) {
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return nil, fmt.Errorf("get network client: %w", err)
+	}
+	resp, err := client.ListInternetGateways(ctx, core.ListInternetGatewaysRequest{
+		CompartmentId: common.String(compartmentID),
+		VcnId:         common.String(vcnID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list internet gateways: %w", err)
+	}
+	return resp.Items, nil
+}
+
+// ── NSG (Network Security Group) methods ──────────────────────────────
+
+func (s *OCIComputeService) CreateNSG(ctx context.Context, region, compartmentID, vcnID, displayName string, vpsID int64) (string, error) {
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.CreateNetworkSecurityGroup(ctx, core.CreateNetworkSecurityGroupRequest{
+		CreateNetworkSecurityGroupDetails: core.CreateNetworkSecurityGroupDetails{
+			CompartmentId: common.String(compartmentID),
+			VcnId:         common.String(vcnID),
+			DisplayName:   common.String(displayName),
+			FreeformTags:  vpsManagedTags(vpsID),
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	return *resp.Id, nil
+}
+
+func (s *OCIComputeService) AddNSGRules(ctx context.Context, region, nsgID string, rules []core.AddSecurityRuleDetails) error {
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return err
+	}
+	_, err = client.AddNetworkSecurityGroupSecurityRules(ctx, core.AddNetworkSecurityGroupSecurityRulesRequest{
+		NetworkSecurityGroupId: common.String(nsgID),
+		AddNetworkSecurityGroupSecurityRulesDetails: core.AddNetworkSecurityGroupSecurityRulesDetails{
+			SecurityRules: rules,
+		},
+	})
+	return err
+}
+
+func (s *OCIComputeService) ListNSGRules(ctx context.Context, region, nsgID string) ([]core.SecurityRule, error) {
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.ListNetworkSecurityGroupSecurityRules(ctx, core.ListNetworkSecurityGroupSecurityRulesRequest{
+		NetworkSecurityGroupId: common.String(nsgID),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Items, nil
+}
+
+func (s *OCIComputeService) RemoveNSGRules(ctx context.Context, region, nsgID string, ruleIDs []string) error {
+	if len(ruleIDs) == 0 {
+		return nil
+	}
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return err
+	}
+	_, err = client.RemoveNetworkSecurityGroupSecurityRules(ctx, core.RemoveNetworkSecurityGroupSecurityRulesRequest{
+		NetworkSecurityGroupId: common.String(nsgID),
+		RemoveNetworkSecurityGroupSecurityRulesDetails: core.RemoveNetworkSecurityGroupSecurityRulesDetails{
+			SecurityRuleIds: ruleIDs,
+		},
+	})
+	return err
+}
+
+func (s *OCIComputeService) DeleteNSG(ctx context.Context, region, nsgID string) error {
+	client, err := s.GetNetworkClient(ctx, region)
+	if err != nil {
+		return err
+	}
+	_, err = client.DeleteNetworkSecurityGroup(ctx, core.DeleteNetworkSecurityGroupRequest{
+		NetworkSecurityGroupId: common.String(nsgID),
+	})
+	return err
 }
