@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/oracle/oci-go-sdk/v65/common"
 	"github.com/oracle/oci-go-sdk/v65/core"
@@ -388,25 +390,29 @@ func (s *NetworkService) DestroyNetwork(ctx context.Context, networkID int64) er
 	compartment := settings.CompartmentOCID
 	var errs []string
 
-	// Step 1: Delete subnet
-	if network.SubnetOCID != "" {
-		s.log.Debug("destroying_subnet", "network_id", networkID, "subnet_ocid", maskOCID(network.SubnetOCID))
-		if err := s.oci.DeleteSubnet(ctx, region, network.SubnetOCID); err != nil {
-			s.log.Error("destroy_subnet_failed", "network_id", networkID, "error", err)
-			errs = append(errs, "delete subnet: "+err.Error())
-		}
-	}
-
-	// Steps 2-5 require the VCN to still exist for listing child resources.
-	if network.VCNOCID != "" && len(errs) == 0 {
-		// Step 2: Remove the route that references managed IGWs from the route table.
-		// This must happen BEFORE deleting IGWs, otherwise OCI returns 409 Conflict.
+	// Step 1: Clear ALL route rules from the default route table.
+	// This must happen BEFORE deleting IGWs and BEFORE deleting the subnet.
+	// OCI rejects IGW deletion (409 Conflict) if any route rule still
+	// references the IGW, and the subnet must not be terminating while we
+	// update the route table.
+	if network.VCNOCID != "" {
 		vcn, verr := s.oci.GetVCN(ctx, region, network.VCNOCID)
+		if verr != nil {
+			s.log.Error("destroy_get_vcn_failed", "network_id", networkID, "error", verr)
+			errs = append(errs, "get VCN: "+verr.Error())
+		}
+
+		// Step 1: Remove route rules that reference managed IGWs.
+		// Must happen BEFORE deleting IGWs (OCI 409 Conflict otherwise).
+		// Keep other routes intact — OCI won't allow an empty route table
+		// while a subnet is still associated.
 		if verr == nil && vcn.DefaultRouteTableId != nil {
 			rtID := *vcn.DefaultRouteTableId
 			rt, rerr := s.oci.GetRouteTable(ctx, region, rtID)
-			if rerr == nil {
-				// Build a set of managed IGW OCIDs so we know which routes to drop.
+			if rerr != nil {
+				s.log.Error("destroy_get_rt_failed", "network_id", networkID, "error", rerr)
+				errs = append(errs, "get route table: "+rerr.Error())
+			} else {
 				igws, _ := s.oci.ListInternetGatewaysByVCN(ctx, region, compartment, network.VCNOCID)
 				managedIGW := make(map[string]bool)
 				for _, igw := range igws {
@@ -415,26 +421,34 @@ func (s *NetworkService) DestroyNetwork(ctx context.Context, networkID int64) er
 						s.log.Debug("found_managed_igw", "network_id", networkID, "igw_ocid", maskOCID(*igw.Id))
 					}
 				}
-				if len(managedIGW) > 0 {
-					var filteredRules []core.RouteRule
-					for _, rule := range rt.RouteRules {
-						if rule.NetworkEntityId != nil && managedIGW[*rule.NetworkEntityId] {
-							s.log.Debug("removing_igw_route", "network_id", networkID, "target", maskOCID(*rule.NetworkEntityId))
-							continue // drop this route
-						}
-						filteredRules = append(filteredRules, rule)
+				var filteredRules []core.RouteRule
+				for _, rule := range rt.RouteRules {
+					if rule.NetworkEntityId != nil && managedIGW[*rule.NetworkEntityId] {
+						s.log.Debug("removing_igw_route", "network_id", networkID, "target", maskOCID(*rule.NetworkEntityId))
+						continue
 					}
-					if len(filteredRules) != len(rt.RouteRules) {
-						if uerr := s.oci.UpdateRouteTable(ctx, region, rtID, filteredRules); uerr != nil {
-							s.log.Error("remove_igw_route_failed", "network_id", networkID, "error", uerr)
-							errs = append(errs, "remove IGW route: "+uerr.Error())
+					filteredRules = append(filteredRules, rule)
+				}
+				if len(filteredRules) != len(rt.RouteRules) {
+					if filteredRules == nil {
+						filteredRules = []core.RouteRule{}
+					}
+					s.log.Debug("updating_route_table", "network_id", networkID, "removed", len(rt.RouteRules)-len(filteredRules))
+					if uerr := s.oci.UpdateRouteTable(ctx, region, rtID, filteredRules); uerr != nil {
+						s.log.Error("remove_igw_routes_failed", "network_id", networkID, "error", uerr)
+						errs = append(errs, "remove IGW routes: "+uerr.Error())
+					} else {
+						s.log.Debug("waiting_route_table_propagate", "network_id", networkID)
+						if werr := s.oci.waitForRouteTableCleared(ctx, region, rtID, managedIGW, 30*time.Second); werr != nil {
+							s.log.Error("wait_route_table_failed", "network_id", networkID, "error", werr)
+							errs = append(errs, "wait for route table: "+werr.Error())
 						}
 					}
 				}
 			}
 		}
 
-		// Step 3: Delete managed internet gateways
+		// Step 2: Delete managed internet gateways
 		if len(errs) == 0 {
 			igws, lerr := s.oci.ListInternetGatewaysByVCN(ctx, region, compartment, network.VCNOCID)
 			if lerr != nil {
@@ -445,19 +459,44 @@ func (s *NetworkService) DestroyNetwork(ctx context.Context, networkID int64) er
 					if igw.FreeformTags != nil && igw.FreeformTags["provessor:managed"] == "true" {
 						s.log.Debug("destroying_igw", "network_id", networkID, "igw_ocid", maskOCID(*igw.Id))
 						if derr := s.oci.DeleteInternetGateway(ctx, region, *igw.Id); derr != nil {
-							s.log.Error("destroy_igw_failed", "network_id", networkID, "igw_ocid", maskOCID(*igw.Id), "error", derr)
-							errs = append(errs, "delete IGW: "+derr.Error())
+							if isNotFound(derr) {
+								s.log.Debug("igw_already_deleted", "network_id", networkID, "igw_ocid", maskOCID(*igw.Id))
+							} else {
+								s.log.Error("destroy_igw_failed", "network_id", networkID, "igw_ocid", maskOCID(*igw.Id), "error", derr)
+								errs = append(errs, "delete IGW: "+derr.Error())
+							}
 						}
 					}
 				}
 			}
 		}
 
-		// Step 4: Delete managed security lists — but skip the VCN's default
+		// Step 3: Delete subnet (now that route table is clean and IGW is gone)
+		if network.SubnetOCID != "" && len(errs) == 0 {
+			s.log.Debug("destroying_subnet", "network_id", networkID, "subnet_ocid", maskOCID(network.SubnetOCID))
+			if err := s.oci.DeleteSubnet(ctx, region, network.SubnetOCID); err != nil {
+				if isNotFound(err) {
+					s.log.Debug("subnet_already_deleted", "network_id", networkID, "subnet_ocid", maskOCID(network.SubnetOCID))
+				} else {
+					s.log.Error("destroy_subnet_failed", "network_id", networkID, "error", err)
+					errs = append(errs, "delete subnet: "+err.Error())
+				}
+			}
+			if len(errs) == 0 {
+				if werr := s.oci.WaitForSubnetTerminated(ctx, region, network.SubnetOCID, 2*time.Minute); werr != nil {
+					if !isNotFound(werr) {
+						s.log.Error("wait_subnet_terminated_failed", "network_id", networkID, "error", werr)
+						errs = append(errs, "wait for subnet termination: "+werr.Error())
+					}
+				}
+			}
+		}
+
+		// Step 4: Delete managed security lists — skip the VCN's default
 		// security list (OCI rejects deletes on the default SL while the VCN is alive).
 		if len(errs) == 0 {
 			defaultSLID := ""
-			if verr == nil && vcn.DefaultSecurityListId != nil {
+			if vcn.DefaultSecurityListId != nil {
 				defaultSLID = *vcn.DefaultSecurityListId
 			}
 			secLists, lerr := s.oci.ListSecurityListsByVCN(ctx, region, compartment, network.VCNOCID)
@@ -547,4 +586,12 @@ func maskOCID(ocid string) string {
 		return "***"
 	}
 	return ocid[:10] + "..." + ocid[len(ocid)-10:]
+}
+
+func isNotFound(err error) bool {
+	var se common.ServiceError
+	if errors.As(err, &se) {
+		return se.GetHTTPStatusCode() == 404
+	}
+	return false
 }
