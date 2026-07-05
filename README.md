@@ -42,7 +42,7 @@ Before running Provessor, you need:
 
 ```bash
 git clone <repo-url>
-cd vps-store
+cd provessor
 
 # Generate a 32-byte hex key — keep this safe, it's unrecoverable
 openssl rand -hex 32 > .env
@@ -63,20 +63,39 @@ CORS_ORIGINS=https://yourdomain.id,http://localhost:10001
 
 > **Warning**: `DB_ENCRYPTION_KEY` is the master encryption key. Without it, your database — including all cloud credentials and user data — is irrecoverable. Back it up.
 
-### 2. Start the API
+### 2. Start the stack
 
 ```bash
 docker compose up --build
 ```
 
-The API listens on `http://localhost:10000`. Verify it's up:
+This starts both services:
+
+| Service | URL | What it does |
+|---------|-----|-------------|
+| `api` | `http://localhost:10000` | Go API (Chi router) |
+| `web` | `http://localhost:10001` | React dashboard (nginx + static build) |
+
+Verify the API is up:
 
 ```bash
 curl http://localhost:10000/api/health
 # {"status":"ok","timestamp":"..."}
 ```
 
-### 3. Start the dashboard (dev mode)
+Open `http://localhost:10001` in your browser. The nginx reverse proxy handles `/api` requests internally — no CORS configuration needed.
+
+**Run only the API** (skip the frontend build):
+
+```bash
+docker compose up api --build
+```
+
+Useful when you want to run the dashboard separately with hot reload (see below).
+
+### 3. Dashboard dev mode (optional)
+
+If you're actively working on the frontend and want hot-reload:
 
 ```bash
 cd web
@@ -84,14 +103,14 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:10001`. The Vite dev server proxies `/api` to the Go backend.
+Open `http://localhost:10001`. The Vite dev server proxies `/api` to the Go backend (default: `http://localhost:10000`).
 
-**Frontend env vars** (set in `.env` or `web/.env`):
+**Frontend env vars** (only needed for dev mode, ignored by Docker build):
 
 | Variable | Description |
 |----------|-------------|
-| `VITE_API_TARGET` | Backend URL that Vite proxies `/api` to. Defaults to `http://localhost:10000`. |
-| `VITE_API_BASE_URL` | Override the API base path from `/api` (only needed in production builds without the Vite proxy). |
+| `VITE_API_TARGET` | Backend URL that Vite proxies `/api/` to. Defaults to `http://localhost:10000`. |
+| `VITE_API_BASE_URL` | Override the API base path from `/api` to a full URL. Only needed when running a production build *without* nginx in front of it. |
 
 ### 4. Sign up and set up
 
@@ -155,7 +174,7 @@ docker compose up --build
 ## Project Structure
 
 ```
-vps-store/
+provessor/
 ├── cmd/api/main.go              # Go entry point
 ├── internal/
 │   ├── config/                  # Env var loading + validation
