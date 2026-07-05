@@ -284,9 +284,12 @@ export default function NewVPS(): JSX.Element {
 
             <div>
               <label className="mb-1 block text-sm font-medium text-gray-700">
-                OCPU: {ocpu}
+                OCPU
               </label>
-              <input type="range" min={1} max={selectedShape?.max_ocpu ?? 64} value={ocpu} onChange={(e) => setOcpu(Number(e.target.value))} className="w-full accent-primary-600" />
+              <input type="number" min={1} max={selectedShape?.max_ocpu ?? 64} value={ocpu} onChange={(e) => setOcpu(Math.max(1, Math.min(selectedShape?.max_ocpu ?? 64, Number(e.target.value) || 1)))} className="mb-2 w-20 rounded-lg border border-gray-300 px-2 py-1.5 text-sm text-center focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500" />
+              <div className="flex items-center gap-3">
+                <input type="range" min={1} max={selectedShape?.max_ocpu ?? 64} value={ocpu} onChange={(e) => setOcpu(Number(e.target.value))} className="flex-1 accent-primary-600" />
+              </div>
               <div className="flex justify-between text-xs text-gray-400">
                 <span>1</span>
                 <span>{selectedShape?.max_ocpu ?? 64}</span>
@@ -295,12 +298,15 @@ export default function NewVPS(): JSX.Element {
 
             <div>
               <label className="mb-1 block text-sm font-medium text-gray-700">
-                Memory (GB): {memory}
+                Memory (GB)
               </label>
-			<input type="range" min={selectedShape?.min_memory ?? 1} max={selectedShape?.max_memory ?? 1024} step={1} value={memory} onChange={(e) => setMemory(Number(e.target.value))} className="w-full accent-primary-600" />
-				<div className="flex justify-between text-xs text-gray-400">
-					<span>{selectedShape?.min_memory ?? 1} GB</span>
-					<span>{selectedShape?.max_memory ?? 1024} GB</span>
+              <input type="number" min={selectedShape?.min_memory ?? 1} max={selectedShape?.max_memory ?? 1024} value={memory} onChange={(e) => setMemory(Math.max(selectedShape?.min_memory ?? 1, Math.min(selectedShape?.max_memory ?? 1024, Number(e.target.value) || 1)))} className="mb-2 w-20 rounded-lg border border-gray-300 px-2 py-1.5 text-sm text-center focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500" />
+              <div className="flex items-center gap-3">
+                <input type="range" min={selectedShape?.min_memory ?? 1} max={selectedShape?.max_memory ?? 1024} step={1} value={memory} onChange={(e) => setMemory(Number(e.target.value))} className="flex-1 accent-primary-600" />
+              </div>
+              <div className="flex justify-between text-xs text-gray-400">
+                <span>{selectedShape?.min_memory ?? 1} GB</span>
+                <span>{selectedShape?.max_memory ?? 1024} GB</span>
               </div>
             </div>
 
