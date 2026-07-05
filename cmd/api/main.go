@@ -10,14 +10,14 @@ import (
 	"syscall"
 	"time"
 
-	"vps-store/internal/config"
-	"vps-store/internal/db"
-	"vps-store/internal/handler"
-	"vps-store/internal/logger"
-	"vps-store/internal/repository"
-	"vps-store/internal/server"
-	"vps-store/internal/service"
-	"vps-store/internal/sse"
+	"github.com/llassingan/provessor/internal/config"
+	"github.com/llassingan/provessor/internal/db"
+	"github.com/llassingan/provessor/internal/handler"
+	"github.com/llassingan/provessor/internal/logger"
+	"github.com/llassingan/provessor/internal/repository"
+	"github.com/llassingan/provessor/internal/server"
+	"github.com/llassingan/provessor/internal/service"
+	"github.com/llassingan/provessor/internal/sse"
 )
 
 func main() {

@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"vps-store/internal/model"
+	"github.com/llassingan/provessor/internal/model"
 )
 
 type VPSResourceRepository struct {

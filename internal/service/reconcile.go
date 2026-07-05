@@ -7,9 +7,9 @@ import (
 
 	"github.com/oracle/oci-go-sdk/v65/core"
 
-	"vps-store/internal/model"
-	"vps-store/internal/repository"
-	"vps-store/internal/sse"
+	"github.com/llassingan/provessor/internal/model"
+	"github.com/llassingan/provessor/internal/repository"
+	"github.com/llassingan/provessor/internal/sse"
 )
 
 type ReconcileService struct {

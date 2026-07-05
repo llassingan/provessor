@@ -10,9 +10,9 @@ import (
 	"github.com/oracle/oci-go-sdk/v65/common"
 	"github.com/oracle/oci-go-sdk/v65/core"
 
-	"vps-store/internal/logger"
-	"vps-store/internal/repository"
-	"vps-store/internal/sse"
+	"github.com/llassingan/provessor/internal/logger"
+	"github.com/llassingan/provessor/internal/repository"
+	"github.com/llassingan/provessor/internal/sse"
 )
 
 type NetworkService struct {

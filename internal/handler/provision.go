@@ -10,9 +10,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"vps-store/internal/model"
-	"vps-store/internal/repository"
-	"vps-store/internal/service"
+	"github.com/llassingan/provessor/internal/model"
+	"github.com/llassingan/provessor/internal/repository"
+	"github.com/llassingan/provessor/internal/service"
 )
 
 type VPSHandler struct {

@@ -11,9 +11,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"vps-store/internal/repository"
-	"vps-store/internal/service"
-	"vps-store/internal/sse"
+	"github.com/llassingan/provessor/internal/repository"
+	"github.com/llassingan/provessor/internal/service"
+	"github.com/llassingan/provessor/internal/sse"
 )
 
 type NetworkHandler struct {

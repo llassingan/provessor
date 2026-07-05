@@ -7,7 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"vps-store/internal/handler"
+	"github.com/llassingan/provessor/internal/handler"
 )
 
 func (s *Server) mountRoutes() {

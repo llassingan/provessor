@@ -21,8 +21,8 @@ import (
 	"github.com/oracle/oci-go-sdk/v65/identity"
 	"golang.org/x/crypto/ssh"
 
-	"vps-store/internal/logger"
-	"vps-store/internal/repository"
+	"github.com/llassingan/provessor/internal/logger"
+	"github.com/llassingan/provessor/internal/repository"
 )
 
 type OCIComputeService struct {

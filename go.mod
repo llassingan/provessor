@@ -1,4 +1,4 @@
-module vps-store
+module github.com/llassingan/provessor
 
 go 1.25.0
 

@@ -9,10 +9,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
 
-	"vps-store/internal/config"
-	"vps-store/internal/handler"
-	"vps-store/internal/service"
-	"vps-store/internal/sse"
+	"github.com/llassingan/provessor/internal/config"
+	"github.com/llassingan/provessor/internal/handler"
+	"github.com/llassingan/provessor/internal/service"
+	"github.com/llassingan/provessor/internal/sse"
 )
 
 type Server struct {

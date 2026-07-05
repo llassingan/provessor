@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"strings"
 
-	"vps-store/internal/model"
-	"vps-store/internal/repository"
-	"vps-store/internal/validator"
+	"github.com/llassingan/provessor/internal/model"
+	"github.com/llassingan/provessor/internal/repository"
+	"github.com/llassingan/provessor/internal/validator"
 )
 
 type TemplateHandler struct {

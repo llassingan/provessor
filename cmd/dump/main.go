@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
-	"vps-store/internal/db"
+	"github.com/llassingan/provessor/internal/db"
 )
 
 func main() {

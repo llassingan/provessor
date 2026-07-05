@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"vps-store/internal/service"
+	"github.com/llassingan/provessor/internal/service"
 )
 
 type AuthHandler struct {

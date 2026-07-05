@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 
-	"vps-store/internal/model"
+	"github.com/llassingan/provessor/internal/model"
 )
 
 type TemplateRepository struct {

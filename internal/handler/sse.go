@@ -8,7 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"vps-store/internal/sse"
+	"github.com/llassingan/provessor/internal/sse"
 )
 
 type SSEHandler struct {

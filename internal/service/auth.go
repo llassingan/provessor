@@ -15,9 +15,9 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"vps-store/internal/config"
-	"vps-store/internal/model"
-	"vps-store/internal/repository"
+	"github.com/llassingan/provessor/internal/config"
+	"github.com/llassingan/provessor/internal/model"
+	"github.com/llassingan/provessor/internal/repository"
 )
 
 var (

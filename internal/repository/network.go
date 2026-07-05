@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"vps-store/internal/model"
+	"github.com/llassingan/provessor/internal/model"
 )
 
 type NetworkRepository struct {

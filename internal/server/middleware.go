@@ -4,8 +4,8 @@ import (
 	"context"
 	"net/http"
 
-	"vps-store/internal/handler"
-	"vps-store/internal/service"
+	"github.com/llassingan/provessor/internal/handler"
+	"github.com/llassingan/provessor/internal/service"
 )
 
 func AuthMiddleware(authService *service.AuthService) func(http.Handler) http.Handler {
