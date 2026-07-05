@@ -3,8 +3,9 @@ ansible:
   package_name: ansible-core
   install_method: distro
   pull:
-    url: https://github.com/your-org/vps-store-ansible.git
-    playbook_names: [docker.yml]
+    # ansible-pull clones this repo on the VM; keep playbook_names in sync with ansible/templates/<template>/playbook.yml if the layout changes.
+    url: https://github.com/llassingan/provessor.git
+    playbook_names: [ansible/templates/docker/playbook.yml]
     clean: true
     full: true
 
