@@ -28,6 +28,10 @@ export default function Layout({
   const [showOnboarding, setShowOnboarding] = useState(false);
 
   useEffect(() => {
+    if (!settings || (settings.tenancy_ocid !== "" && settings.user_ocid !== "")) {
+      return;
+    }
+
     if (sessionStorage.getItem("onboarding_forced") === "1") {
       sessionStorage.removeItem("onboarding_forced");
       setShowOnboarding(true);

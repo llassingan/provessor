@@ -2,6 +2,11 @@ import { useState, useEffect, type FormEvent } from "react";
 import { settings } from "../lib/api";
 import type { Settings, UpdateSettingsRequest } from "../lib/api";
 
+function extractRegionFromURL(url: string): string {
+  const m = /^https:\/\/iaas\.([^.]+)\.oraclecloud\.com\/?$/.exec(url);
+  return m?.[1] ?? "";
+}
+
 interface SettingsPageProps {
   settings: Settings | null;
   onSettingsRefresh: () => void;
@@ -59,13 +64,20 @@ export default function SettingsPage({
     setForm(formFromSettings(appSettings));
   }, [appSettings]);
 
+  useEffect(() => {
+    if (form.region !== "" && (form.api_base_url === "" || form.api_base_url === `https://iaas.${extractRegionFromURL(form.api_base_url)}.oraclecloud.com` || form.api_base_url === `https://iaas.${form.region}.oraclecloud.com`)) {
+      setForm((f) => ({ ...f, api_base_url: `https://iaas.${form.region}.oraclecloud.com` }));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.region]);
+
   const handleSave = async (e: FormEvent): Promise<void> => {
     e.preventDefault();
     setError("");
     setSuccess("");
 
     const missing = Object.entries(form).filter(
-      ([, v]) => v.trim().length === 0,
+      ([k, v]) => k !== "api_base_url" && v.trim().length === 0,
     );
     if (missing.length > 0) {
       setError(`Missing fields: ${missing.map(([k]) => k).join(", ")}`);
@@ -96,6 +108,8 @@ export default function SettingsPage({
     try {
       await settings.update(req);
       setSuccess("Credentials saved successfully.");
+      localStorage.setItem("onboarding_dismissed", "1");
+      sessionStorage.removeItem("onboarding_forced");
       onSettingsRefresh();
     } catch (err: unknown) {
       setError(
@@ -242,6 +256,7 @@ function TextField({
         onChange={(e) => {
           onChange(e.target.value);
         }}
+        autoComplete="off"
         className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
       />
     </div>

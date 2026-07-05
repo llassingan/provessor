@@ -8,7 +8,7 @@ CREATE TABLE settings (
     compartment_ocid TEXT NOT NULL,
     vcn_ocid        TEXT NOT NULL,
     subnet_ocid     TEXT NOT NULL,
-    api_base_url    TEXT NOT NULL DEFAULT 'http://localhost:8080',
+    api_base_url    TEXT NOT NULL DEFAULT '',
     api_token       TEXT NOT NULL,
     network_provisioned INTEGER NOT NULL DEFAULT 0,
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -16,4 +16,4 @@ CREATE TABLE settings (
 );
 
 INSERT OR IGNORE INTO settings (id, tenancy_ocid, user_ocid, fingerprint, private_key, region, compartment_ocid, vcn_ocid, subnet_ocid, api_base_url, api_token, network_provisioned)
-VALUES (1, '', '', '', '', '', '', '', '', 'http://localhost:8080', hex(randomblob(32)), 0);
+VALUES (1, '', '', '', '', '', '', '', '', '', hex(randomblob(32)), 0);

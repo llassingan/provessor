@@ -89,7 +89,7 @@ func (h *SettingsHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.Re
 	req.APIToken = strings.TrimSpace(req.APIToken)
 
 	if req.TenancyOCID == "" || req.UserOCID == "" || req.Fingerprint == "" ||
-		req.Region == "" || req.CompartmentOCID == "" || req.APIBaseURL == "" || req.APIToken == "" {
+		req.Region == "" || req.CompartmentOCID == "" || req.APIToken == "" {
 		writeError(w, http.StatusBadRequest, "all fields except private_key are required")
 		return
 	}
