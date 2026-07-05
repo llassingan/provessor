@@ -49,6 +49,14 @@ func NewAuthService(userRepo *repository.UserRepository, cfg *config.Config) (*A
 	}, nil
 }
 
+func (s *AuthService) HasUsers(ctx context.Context) (bool, error) {
+	count, err := s.userRepo.Count(ctx)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 func (s *AuthService) Signup(ctx context.Context, email, password string) (*model.User, string, error) {
 	count, err := s.userRepo.Count(ctx)
 	if err != nil {

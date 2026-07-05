@@ -14,6 +14,8 @@ import NewNetwork from "./pages/NewNetwork";
 import { settings } from "./lib/api";
 import type { Settings } from "./lib/api";
 
+const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "/api";
+
 function ProtectedRoute({ children }: { children: ReactNode }) {
   const [checking, setChecking] = useState(true);
   const [authorized, setAuthorized] = useState(false);
@@ -58,6 +60,68 @@ function ProtectedRoute({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+function InitGuard({ children }: { children: ReactNode }) {
+  const [phase, setPhase] = useState<"checking" | "has_users" | "no_users">("checking");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API_BASE}/auth/init`, { credentials: "include" })
+      .then((r) => r.json())
+      .then((data: { has_users: boolean }) => {
+        if (!cancelled) setPhase(data.has_users ? "has_users" : "no_users");
+      })
+      .catch(() => {
+        if (!cancelled) setPhase("has_users");
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  if (phase === "checking") {
+    return (
+      <div className="flex h-screen items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary-200 border-t-primary-600" />
+      </div>
+    );
+  }
+
+  if (phase === "no_users") {
+    return <Navigate to="/signup" replace />;
+  }
+
+  return <>{children}</>;
+}
+
+function LoginGuard({ children }: { children: ReactNode }) {
+  const [phase, setPhase] = useState<"checking" | "has_users" | "no_users">("checking");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API_BASE}/auth/init`, { credentials: "include" })
+      .then((r) => r.json())
+      .then((data: { has_users: boolean }) => {
+        if (!cancelled) setPhase(data.has_users ? "has_users" : "no_users");
+      })
+      .catch(() => {
+        if (!cancelled) setPhase("has_users");
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  if (phase === "checking") {
+    return (
+      <div className="flex h-screen items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary-200 border-t-primary-600" />
+      </div>
+    );
+  }
+
+  if (phase === "no_users") {
+    return <Navigate to="/signup" replace />;
+  }
+
+  return <>{children}</>;
+}
+
 export default function App(): JSX.Element {
   const [appSettings, setAppSettings] = useState<Settings | null>(null);
 
@@ -76,8 +140,8 @@ export default function App(): JSX.Element {
 
   return (
     <Routes>
-      <Route path="/" element={<Navigate to="/dashboard" replace />} />
-      <Route path="/login" element={<Login />} />
+      <Route path="/" element={<InitGuard><Navigate to="/dashboard" replace /></InitGuard>} />
+      <Route path="/login" element={<LoginGuard><Login /></LoginGuard>} />
       <Route path="/signup" element={<Signup />} />
       <Route
         path="/dashboard"

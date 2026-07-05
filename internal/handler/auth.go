@@ -18,6 +18,15 @@ func NewAuthHandler(authService *service.AuthService) *AuthHandler {
 	return &AuthHandler{authService: authService}
 }
 
+func (h *AuthHandler) HandleInit(w http.ResponseWriter, r *http.Request) {
+	hasUsers, err := h.authService.HasUsers(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check users")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"has_users": hasUsers})
+}
+
 type signupRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`

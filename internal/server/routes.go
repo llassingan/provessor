@@ -16,6 +16,8 @@ func (s *Server) mountRoutes() {
 
 	r.Get("/api/health", handleHealth)
 
+	r.Get("/api/auth/init", authHandler.HandleInit)
+
 	r.Post("/api/auth/signup", authHandler.HandleSignup)
 	r.Post("/api/auth/login", authHandler.HandleLogin)
 	r.Post("/api/auth/logout", authHandler.HandleLogout)
