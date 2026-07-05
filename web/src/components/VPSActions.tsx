@@ -42,7 +42,7 @@ export default function VPSActions({
     setLoading("terminate");
     try {
       await vps.terminate(vpsInstance.id);
-      onUpdate({ ...vpsInstance, status: "terminated" });
+      onUpdate({ ...vpsInstance, status: "terminating" });
     } catch (err) {
       alert(
         err instanceof Error ? err.message : "Terminate failed",

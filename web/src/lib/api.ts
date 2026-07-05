@@ -87,6 +87,7 @@ export type VPSStatus =
   | "running"
   | "stopped"
   | "failed"
+  | "terminating"
   | "terminated";
 
 export interface VPS {

@@ -13,6 +13,7 @@ function StatusBadge({ status }: { status: VPS["status"] }): JSX.Element {
     running: "bg-emerald-100 text-emerald-700",
     stopped: "bg-amber-100 text-amber-700",
     failed: "bg-red-100 text-red-700",
+    terminating: "bg-orange-100 text-orange-700",
     terminated: "bg-gray-100 text-gray-500",
   };
 
@@ -22,6 +23,7 @@ function StatusBadge({ status }: { status: VPS["status"] }): JSX.Element {
     running: "Running",
     stopped: "Stopped",
     failed: "Failed",
+    terminating: "Terminating",
     terminated: "Terminated",
   };
 
@@ -31,6 +33,9 @@ function StatusBadge({ status }: { status: VPS["status"] }): JSX.Element {
     >
       {status === "provisioning" && (
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
+      )}
+      {status === "terminating" && (
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-orange-500" />
       )}
       {labels[status] ?? status}
     </span>
@@ -152,9 +157,13 @@ export default function VPSDetail(): JSX.Element {
   }, [instance?.network_id]);
 
   useEffect(() => {
-    if (events.length === 0) return;
+    if (events.length === 0 || !instance) return;
     const last = events[events.length - 1];
     if (!last) return;
+    if (last.status === "terminated" && instance.status !== "terminated") {
+      setInstance({ ...instance, status: "terminated" });
+      return;
+    }
     if (last.status === "running" || last.status === "success" || last.status === "error" || last.status === "failed") {
       vps
         .get(numericId)
@@ -164,6 +173,22 @@ export default function VPSDetail(): JSX.Element {
         });
     }
   }, [events, numericId]);
+
+  // Poll while terminating — OCI termination takes ~1min and the SSE
+  // heartbeat keeps the connection alive, so the reconnect poll below
+  // never triggers. Poll every 5s until status leaves "terminating".
+  useEffect(() => {
+    if (!instance || instance.status !== "terminating") return;
+    const interval = setInterval(() => {
+      vps.get(numericId).then((data) => {
+        setInstance((prev) => {
+          if (!prev || prev.status !== data.status) return data;
+          return prev;
+        });
+      }).catch(() => {});
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [instance?.status, numericId]);
 
   // Poll VPS status on SSE connect/reconnect — events may have been missed
   // while the SSE connection was dropped during provisioning.
