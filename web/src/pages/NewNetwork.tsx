@@ -7,6 +7,7 @@ import ProvisioningLog from "../components/ProvisioningLog";
 
 export default function NewNetwork(): JSX.Element {
   const [name, setName] = useState("");
+  const [selectedRegionGroup, setSelectedRegionGroup] = useState("");
   const [region, setRegion] = useState("");
   const [regionGroups, setRegionGroups] = useState<RegionGroup[]>([]);
   const [network, setNetwork] = useState<Network | null>(null);
@@ -20,6 +21,10 @@ export default function NewNetwork(): JSX.Element {
   const [maxNetworks, setMaxNetworks] = useState(0);
 
   const navigate = useNavigate();
+  const selectedGroup = regionGroups.find(
+    (group) => group.group === selectedRegionGroup,
+  );
+  const networkEventsURL = network ? `/api/networks/${String(network.id)}/events` : "";
 
   useEffect(() => {
     settings
@@ -42,9 +47,7 @@ export default function NewNetwork(): JSX.Element {
     }).catch(() => {});
   }, []);
 
-  const { events, connected } = useSSE(
-    network ? `/api/networks/${network.id}/events` : "",
-  );
+  const { events, connected } = useSSE(networkEventsURL);
 
   useEffect(() => {
     if (events.length > 0) {
@@ -79,7 +82,7 @@ export default function NewNetwork(): JSX.Element {
         return;
       }
       if (maxNetworks > 0 && networkCount >= maxNetworks) {
-        setError(`Maximum of ${maxNetworks} networks reached.`);
+        setError(`Maximum of ${String(maxNetworks)} networks reached.`);
         return;
       }
 
@@ -332,34 +335,61 @@ export default function NewNetwork(): JSX.Element {
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium text-gray-700">Region</label>
+              <label className="mb-2 block text-sm font-medium text-gray-700">
+                Region
+              </label>
               {regionGroups.length === 0 ? (
                 <div className="text-sm text-gray-400">Loading regions...</div>
               ) : (
-                <div className="space-y-4">
-                  {regionGroups.map((group) => (
-                    <div key={group.group}>
-                      <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-gray-400">
-                        {group.group}
-                      </div>
-                      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                        {group.items.map((item) => (
-                          <button
-                            key={item.key}
-                            type="button"
-                            onClick={() => setRegion(item.key)}
-                            className={`rounded-lg border px-3 py-2 text-left text-sm transition-all ${
-                              region === item.key
-                                ? "border-primary-500 bg-primary-50 shadow-sm font-medium text-primary-700"
-                                : "border-gray-200 bg-white hover:border-gray-300 text-gray-700"
-                            }`}
-                          >
-                            {item.name}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label
+                      htmlFor="region-group"
+                      className="mb-1 block text-xs font-medium text-gray-600"
+                    >
+                      Region Group
+                    </label>
+                    <select
+                      id="region-group"
+                      value={selectedRegionGroup}
+                      onChange={(e) => {
+                        setSelectedRegionGroup(e.target.value);
+                        setRegion("");
+                      }}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                    >
+                      <option value="">Select a region group</option>
+                      {regionGroups.map((group) => (
+                        <option key={group.group} value={group.group}>
+                          {group.group}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="region"
+                      className="mb-1 block text-xs font-medium text-gray-600"
+                    >
+                      Region
+                    </label>
+                    <select
+                      id="region"
+                      value={region}
+                      onChange={(e) => {
+                        setRegion(e.target.value);
+                      }}
+                      disabled={!selectedGroup}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400"
+                    >
+                      <option value="">Select a region</option>
+                      {selectedGroup?.items.map((item) => (
+                        <option key={item.key} value={item.key}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               )}
             </div>
