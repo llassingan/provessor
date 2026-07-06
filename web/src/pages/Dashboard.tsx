@@ -68,9 +68,11 @@ export default function Dashboard({
   const [error, setError] = useState("");
   const navigate = useNavigate();
 
-  const fetchInstances = useCallback(() => {
-    setLoading(true);
-    setError("");
+  const fetchInstances = useCallback((showLoading = true) => {
+    if (showLoading) {
+      setLoading(true);
+      setError("");
+    }
     vps
       .list()
       .then((data) => {
@@ -82,13 +84,27 @@ export default function Dashboard({
         );
       })
       .finally(() => {
-        setLoading(false);
+        if (showLoading) {
+          setLoading(false);
+        }
       });
   }, []);
 
   useEffect(() => {
     fetchInstances();
   }, [fetchInstances]);
+
+  useEffect(() => {
+    if (!instances.some((inst) => inst.status === "terminating")) return;
+
+    const interval = window.setInterval(() => {
+      fetchInstances(false);
+    }, 5000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [fetchInstances, instances]);
 
   const handleUpdate = (updated: VPS): void => {
     setInstances((prev) =>
@@ -115,7 +131,9 @@ export default function Dashboard({
         <div className="flex gap-3">
           <button
             type="button"
-            onClick={fetchInstances}
+            onClick={() => {
+              fetchInstances();
+            }}
             className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
           >
             Refresh
@@ -151,7 +169,9 @@ export default function Dashboard({
           {error}
           <button
             type="button"
-            onClick={fetchInstances}
+            onClick={() => {
+              fetchInstances();
+            }}
             className="ml-3 font-medium underline underline-offset-2"
           >
             Retry
