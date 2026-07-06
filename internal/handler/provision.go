@@ -4,9 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -43,13 +46,13 @@ func NewVPSHandler(
 }
 
 type createVPSRequest struct {
-	TemplateID         int64    `json:"template_id"`
-	NetworkID          int64    `json:"network_id"`
-	DisplayName        string   `json:"display_name"`
-	Shape              *string  `json:"shape,omitempty"`
-	OCPU               *float64 `json:"ocpu,omitempty"`
-	MemoryGB           *float64 `json:"memory_gb,omitempty"`
-	BootVolumeSizeGB   *int     `json:"boot_volume_size_gb,omitempty"`
+	TemplateID       int64    `json:"template_id"`
+	NetworkID        int64    `json:"network_id"`
+	DisplayName      string   `json:"display_name"`
+	Shape            *string  `json:"shape,omitempty"`
+	OCPU             *float64 `json:"ocpu,omitempty"`
+	MemoryGB         *float64 `json:"memory_gb,omitempty"`
+	BootVolumeSizeGB *int     `json:"boot_volume_size_gb,omitempty"`
 }
 
 func (h *VPSHandler) HandleCreateVPS(w http.ResponseWriter, r *http.Request) {
@@ -109,13 +112,13 @@ func (h *VPSHandler) HandleCreateVPS(w http.ResponseWriter, r *http.Request) {
 
 	vps := &model.VPS{
 		DisplayName:      req.DisplayName,
-		TemplateID:        req.TemplateID,
-		NetworkID:         model.NullInt64{NullInt64: sql.NullInt64{Int64: req.NetworkID, Valid: true}},
-		Shape:             template.Shape,
-		OCPU:              template.DefaultOCPU,
-		MemoryGB:          template.DefaultMemory,
-		BootVolumeSizeGB:  template.BootVolumeSizeGB,
-		Status:            "pending",
+		TemplateID:       req.TemplateID,
+		NetworkID:        model.NullInt64{NullInt64: sql.NullInt64{Int64: req.NetworkID, Valid: true}},
+		Shape:            template.Shape,
+		OCPU:             template.DefaultOCPU,
+		MemoryGB:         template.DefaultMemory,
+		BootVolumeSizeGB: template.BootVolumeSizeGB,
+		Status:           "pending",
 	}
 
 	if req.Shape != nil {
@@ -276,37 +279,64 @@ func (h *VPSHandler) HandleDeleteVPS(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+const credentialsCallbackMaxBodyBytes = 64 * 1024
+
 func (h *VPSHandler) HandleCredentialsCallback(w http.ResponseWriter, r *http.Request) {
-	_, ok := UserIDFromContext(r.Context())
-	if !ok {
-		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid VPS id")
-			return
-		}
-
-		var creds map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid credentials body")
-			return
-		}
-
-		credsJSON, err := json.Marshal(creds)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to marshal credentials")
-			return
-		}
-
-		if err := h.vpsRepo.UpdateCredentials(r.Context(), id, string(credsJSON)); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to update credentials")
-			return
-		}
-
-		w.WriteHeader(http.StatusNoContent)
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid VPS id")
 		return
 	}
 
-	writeError(w, http.StatusForbidden, "forbidden")
+	token, ok := credentialsCallbackBearerToken(r.Header.Get("Authorization"))
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "invalid callback token")
+		return
+	}
+
+	var creds map[string]any
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, credentialsCallbackMaxBodyBytes))
+	if err := decoder.Decode(&creds); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid credentials body")
+		return
+	}
+	if creds == nil {
+		writeError(w, http.StatusBadRequest, "invalid credentials body")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid credentials body")
+		return
+	}
+
+	credsJSON, err := json.Marshal(creds)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to marshal credentials")
+		return
+	}
+
+	consumed, err := h.vpsRepo.ConsumeCredentialsCallback(r.Context(), id, repository.HashCredentialsCallbackToken(token), string(credsJSON))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update credentials")
+		return
+	}
+	if !consumed {
+		writeError(w, http.StatusUnauthorized, "invalid callback token")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func credentialsCallbackBearerToken(header string) (string, bool) {
+	if !strings.HasPrefix(header, "Bearer ") {
+		return "", false
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+	if token == "" || strings.ContainsAny(token, " \t\r\n") {
+		return "", false
+	}
+	return token, true
 }
 
 func (h *VPSHandler) HandleStartVPS(w http.ResponseWriter, r *http.Request) {
