@@ -25,7 +25,7 @@ runcmd:
   - |
     for i in $(seq 1 5); do
       sleep 30
-      curl -X POST http://API_HOST/api/vps/INSTANCE_ID/credentials \
+      curl -X POST API_HOST/api/vps/INSTANCE_ID/credentials \
         -H "Authorization: Bearer API_TOKEN" \
         -H "Content-Type: application/json" \
         -d @/root/.vpsstore/credentials.json && break
