@@ -6,7 +6,8 @@ services:
     environment:
       - DB_ENCRYPTION_KEY=${DB_ENCRYPTION_KEY}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:10001,http://localhost:8080}
-      - DEV=${DEV:-}
+      - DEV=${DEV:-true}
+      - API_URL=${API_URL:-http://localhost:10000}
       - LOG_FILE=${LOG_FILE:-/app/logs/provessor.log}
     volumes:
       - ./data:/app/data

@@ -40,6 +40,10 @@ func Load() (*Config, error) {
 	if apiURL == "" {
 		apiURL = "http://localhost:10000"
 	}
+	apiURL = strings.TrimRight(apiURL, "/")
+	if !dev && !strings.HasPrefix(apiURL, "https://") {
+		return nil, errors.New("API_URL must use https:// when DEV is not true")
+	}
 
 	logFile := os.Getenv("LOG_FILE")
 	maxAttempts := parseIntEnv("LOGIN_MAX_ATTEMPTS", 5)
@@ -52,7 +56,7 @@ func Load() (*Config, error) {
 		LogFile:             logFile,
 		LoginMaxAttempts:    maxAttempts,
 		LoginLockoutMinutes: lockoutMinutes,
-		APIURL:              strings.TrimRight(apiURL, "/"),
+		APIURL:              apiURL,
 	}, nil
 }
 

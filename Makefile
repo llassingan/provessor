@@ -7,7 +7,7 @@ run:
 	go run ./cmd/api
 
 dev:
-	DB_ENCRYPTION_KEY=$$(cat .env | grep DB_ENCRYPTION_KEY | cut -d= -f2) go run ./cmd/api
+	DEV=true DB_ENCRYPTION_KEY=$$(cat .env | grep DB_ENCRYPTION_KEY | cut -d= -f2) go run ./cmd/api
 
 test:
 	go test -race ./...
