@@ -122,10 +122,22 @@ func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) err
 
 	log.Printf("[DEBUG] provision_vps: vps %d SSH key pair generated", vpsID)
 
+	callbackToken, err := repository.GenerateCredentialsCallbackToken()
+	if err != nil {
+		s.vpsRepo.UpdateStatus(ctx, vpsID, "failed")
+		emit("error", "failed", "Failed to generate callback token")
+		return fmt.Errorf("generate callback token: %w", err)
+	}
+	if err := s.vpsRepo.SetCredentialsCallbackToken(ctx, vpsID, repository.HashCredentialsCallbackToken(callbackToken), time.Now().UTC().Add(24*time.Hour)); err != nil {
+		s.vpsRepo.UpdateStatus(ctx, vpsID, "failed")
+		emit("error", "failed", "Failed to save callback token")
+		return fmt.Errorf("save callback token: %w", err)
+	}
+
 	cloudInitYAML := template.CloudInitYAML
 	cloudInitYAML = strings.ReplaceAll(cloudInitYAML, "API_HOST", s.apiURL)
 	cloudInitYAML = strings.ReplaceAll(cloudInitYAML, "INSTANCE_ID", fmt.Sprintf("%d", vpsID))
-	cloudInitYAML = strings.ReplaceAll(cloudInitYAML, "API_TOKEN", "")
+	cloudInitYAML = strings.ReplaceAll(cloudInitYAML, "API_TOKEN", callbackToken)
 
 	log.Printf("[DEBUG] provision_vps: vps %d cloud-init prepared (len=%d)", vpsID, len(cloudInitYAML))
 
@@ -758,7 +770,7 @@ func (s *VPSProvisionService) ResetPassword(ctx context.Context, vpsID int64, ne
 			},
 			Content: &computeinstanceagent.InstanceAgentCommandContent{
 				Source: computeinstanceagent.InstanceAgentCommandSourceViaTextDetails{
-					Text:      common.String(commandText),
+					Text:       common.String(commandText),
 					TextSha256: nil,
 				},
 				Output: &computeinstanceagent.InstanceAgentCommandOutputViaTextDetails{},
