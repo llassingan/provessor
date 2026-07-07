@@ -4,14 +4,59 @@ interface ApiError {
   error?: string;
 }
 
+interface CSRFResponse {
+  csrf_token: string;
+}
+
+let csrfToken: string | null = null;
+let csrfTokenRequest: Promise<string> | null = null;
+
+function requestMethod(options?: RequestInit): string {
+  return (options?.method ?? "GET").toUpperCase();
+}
+
+function isUnsafeMethod(method: string): boolean {
+  return !["GET", "HEAD", "OPTIONS", "TRACE"].includes(method);
+}
+
+async function getCSRFToken(): Promise<string> {
+  if (csrfToken !== null) {
+    return csrfToken;
+  }
+  if (csrfTokenRequest === null) {
+    csrfTokenRequest = fetch(`${API_BASE}/auth/csrf`, { credentials: "include" })
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error("Failed to fetch CSRF token");
+        }
+        return res.json() as Promise<CSRFResponse>;
+      })
+      .then((data) => {
+        csrfToken = data.csrf_token;
+        return data.csrf_token;
+      })
+      .finally(() => {
+        csrfTokenRequest = null;
+      });
+  }
+  return csrfTokenRequest;
+}
+
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  const method = requestMethod(options);
+  const headers = new Headers(options?.headers);
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  if (isUnsafeMethod(method) && !headers.has("X-CSRF-Token")) {
+    headers.set("X-CSRF-Token", await getCSRFToken());
+  }
+
   const res = await fetch(`${API_BASE}${path}`, {
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...options?.headers,
-    },
     ...options,
+    method,
+    credentials: "include",
+    headers,
   });
 
   if (res.status === 401) {
@@ -25,7 +70,7 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const err = (await res.json().catch(() => ({ error: res.statusText }))) as ApiError;
-    throw new Error(err.error ?? `HTTP ${res.status}`);
+    throw new Error(err.error ?? `HTTP ${String(res.status)}`);
   }
 
   if (res.status === 204) {
@@ -172,8 +217,8 @@ export const auth = {
     });
   },
 
-  logout(): Promise<void> {
-    return apiFetch<void>("/auth/logout", { method: "POST" });
+  logout(): Promise<undefined> {
+    return apiFetch<undefined>("/auth/logout", { method: "POST" });
   },
 };
 
@@ -183,7 +228,7 @@ export const vps = {
   },
 
   get(id: number): Promise<VPS> {
-    return apiFetch<VPS>(`/vps/${id}`);
+    return apiFetch<VPS>(`/vps/${String(id)}`);
   },
 
   create(req: CreateVPSRequest): Promise<VPS> {
@@ -193,43 +238,43 @@ export const vps = {
     });
   },
 
-  delete(id: number): Promise<void> {
-    return apiFetch<void>(`/vps/${id}`, { method: "DELETE" });
+  delete(id: number): Promise<undefined> {
+    return apiFetch<undefined>(`/vps/${String(id)}`, { method: "DELETE" });
   },
 
   terminate(id: number): Promise<{ status: string }> {
-    return apiFetch<{ status: string }>(`/vps/${id}/terminate`, { method: "POST" });
+    return apiFetch<{ status: string }>(`/vps/${String(id)}/terminate`, { method: "POST" });
   },
 
   action(id: number, action: "start" | "stop"): Promise<VPS> {
-    return apiFetch<VPS>(`/vps/${id}/${action}`, { method: "POST" });
+    return apiFetch<VPS>(`/vps/${String(id)}/${action}`, { method: "POST" });
   },
 
   restart(id: number): Promise<VPS> {
-    return apiFetch<VPS>(`/vps/${id}/restart`, { method: "POST" });
+    return apiFetch<VPS>(`/vps/${String(id)}/restart`, { method: "POST" });
   },
 
   reset(id: number): Promise<VPS> {
-    return apiFetch<VPS>(`/vps/${id}/reset`, { method: "POST" });
+    return apiFetch<VPS>(`/vps/${String(id)}/reset`, { method: "POST" });
   },
 
   resetPassword(id: number, password: string): Promise<VPS> {
-    return apiFetch<VPS>(`/vps/${id}/reset-password`, {
+    return apiFetch<VPS>(`/vps/${String(id)}/reset-password`, {
       method: "POST",
       body: JSON.stringify({ password }),
     });
   },
 
   refreshIPs(id: number): Promise<VPS> {
-    return apiFetch<VPS>(`/vps/${id}/refresh-ips`, { method: "POST" });
+    return apiFetch<VPS>(`/vps/${String(id)}/refresh-ips`, { method: "POST" });
   },
 
   getFirewall(id: number): Promise<FirewallRules> {
-    return apiFetch<FirewallRules>(`/vps/${id}/firewall`);
+    return apiFetch<FirewallRules>(`/vps/${String(id)}/firewall`);
   },
 
   updateFirewall(id: number, rules: FirewallRule[]): Promise<FirewallRules> {
-    return apiFetch<FirewallRules>(`/vps/${id}/firewall`, {
+    return apiFetch<FirewallRules>(`/vps/${String(id)}/firewall`, {
       method: "POST",
       body: JSON.stringify({ rules }),
     });
@@ -306,7 +351,7 @@ export const networks = {
   },
 
   get(id: number): Promise<Network> {
-    return apiFetch<Network>(`/networks/${id}`);
+    return apiFetch<Network>(`/networks/${String(id)}`);
   },
 
   create(name: string, region: string): Promise<Network> {
@@ -316,12 +361,12 @@ export const networks = {
     });
   },
 
-  delete(id: number): Promise<void> {
-    return apiFetch<void>(`/networks/${id}`, { method: "DELETE" });
+  delete(id: number): Promise<undefined> {
+    return apiFetch<undefined>(`/networks/${String(id)}`, { method: "DELETE" });
   },
 
   provision(id: number): Promise<{ status: string }> {
-    return apiFetch<{ status: string }>(`/networks/${id}/provision`, {
+    return apiFetch<{ status: string }>(`/networks/${String(id)}/provision`, {
       method: "POST",
     });
   },
