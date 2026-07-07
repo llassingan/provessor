@@ -14,13 +14,15 @@ func (s *Server) mountRoutes() {
 	r := s.router
 	authHandler := handler.NewAuthHandler(s.authService)
 
+	r.Use(RateLimitAPIByIP(s.limiters.globalAPI))
+
 	r.Get("/api/health", handleHealth)
-
 	r.Get("/api/auth/init", authHandler.HandleInit)
+	r.Get("/api/auth/csrf", HandleCSRFToken(s.csrfSecret, !s.config.Dev))
 
-	r.Post("/api/auth/signup", authHandler.HandleSignup)
-	r.Post("/api/auth/login", authHandler.HandleLogin)
-	r.Post("/api/auth/logout", authHandler.HandleLogout)
+	r.With(RateLimitByIP(s.limiters.signup)).Post("/api/auth/signup", authHandler.HandleSignup)
+	r.With(RateLimitByIP(s.limiters.login)).Post("/api/auth/login", authHandler.HandleLogin)
+	r.With(CSRFMiddleware(s.csrfSecret)).Post("/api/auth/logout", authHandler.HandleLogout)
 
 	r.Group(func(r chi.Router) {
 		r.Use(AuthMiddleware(s.authService))
@@ -31,19 +33,19 @@ func (s *Server) mountRoutes() {
 			r.Get("/api/shapes", handleListShapesStub)
 		}
 
-		r.Post("/api/vps", s.vpsHandler.HandleCreateVPS)
+		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/vps", s.vpsHandler.HandleCreateVPS)
 		r.Get("/api/vps", s.vpsHandler.HandleListVPS)
 		r.Get("/api/vps/{id}", s.vpsHandler.HandleGetVPS)
-		r.Delete("/api/vps/{id}", s.vpsHandler.HandleDeleteVPS)
-	r.Post("/api/vps/{id}/start", s.vpsHandler.HandleStartVPS)
-	r.Post("/api/vps/{id}/stop", s.vpsHandler.HandleStopVPS)
-	r.Post("/api/vps/{id}/restart", s.vpsHandler.HandleRestartVPS)
-	r.Post("/api/vps/{id}/reset", s.vpsHandler.HandleResetVPS)
-	r.Post("/api/vps/{id}/reset-password", s.vpsHandler.HandleResetPasswordVPS)
-	r.Post("/api/vps/{id}/terminate", s.vpsHandler.HandleTerminateVPS)
+		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Delete("/api/vps/{id}", s.vpsHandler.HandleDeleteVPS)
+		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/vps/{id}/start", s.vpsHandler.HandleStartVPS)
+		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/vps/{id}/stop", s.vpsHandler.HandleStopVPS)
+		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/vps/{id}/restart", s.vpsHandler.HandleRestartVPS)
+		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/vps/{id}/reset", s.vpsHandler.HandleResetVPS)
+		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/vps/{id}/reset-password", s.vpsHandler.HandleResetPasswordVPS)
+		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/vps/{id}/terminate", s.vpsHandler.HandleTerminateVPS)
 		r.Get("/api/vps/{id}/firewall", s.vpsHandler.HandleGetFirewall)
-		r.Post("/api/vps/{id}/firewall", s.vpsHandler.HandleUpdateFirewall)
-		r.Post("/api/vps/{id}/refresh-ips", s.vpsHandler.HandleRefreshIPs)
+		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/vps/{id}/firewall", s.vpsHandler.HandleUpdateFirewall)
+		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/vps/{id}/refresh-ips", s.vpsHandler.HandleRefreshIPs)
 
 		if s.sseHandler != nil {
 			r.Get("/api/vps/{id}/events", s.sseHandler.HandleVPSEvents)
@@ -55,46 +57,46 @@ func (s *Server) mountRoutes() {
 
 		if s.templateHandler != nil {
 			r.Get("/api/templates", s.templateHandler.HandleListTemplates)
-			r.Post("/api/templates", s.templateHandler.HandleCreateTemplate)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/templates", s.templateHandler.HandleCreateTemplate)
 		} else {
 			r.Get("/api/templates", handleListTemplatesStub)
-			r.Post("/api/templates", handleCreateTemplateStub)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/templates", handleCreateTemplateStub)
 		}
 
 		if s.settingsHandler != nil {
 			r.Get("/api/settings", s.settingsHandler.HandleGetSettings)
-			r.Put("/api/settings", s.settingsHandler.HandleUpdateSettings)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Put("/api/settings", s.settingsHandler.HandleUpdateSettings)
 			r.Get("/api/regions", s.settingsHandler.HandleListRegions)
 		} else {
 			r.Get("/api/settings", handleGetSettingsStub)
-			r.Put("/api/settings", handleUpdateSettingsStub)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Put("/api/settings", handleUpdateSettingsStub)
 			r.Get("/api/regions", handleListRegionsStub)
 		}
 
 		if s.networkHandler != nil {
-			r.Post("/api/networks", s.networkHandler.HandleCreateNetwork)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/networks", s.networkHandler.HandleCreateNetwork)
 			r.Get("/api/networks", s.networkHandler.HandleListNetworks)
 			r.Get("/api/networks/{id}", s.networkHandler.HandleGetNetwork)
-			r.Delete("/api/networks/{id}", s.networkHandler.HandleDeleteNetwork)
-			r.Post("/api/networks/{id}/provision", s.networkHandler.HandleNetworkProvision)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Delete("/api/networks/{id}", s.networkHandler.HandleDeleteNetwork)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/networks/{id}/provision", s.networkHandler.HandleNetworkProvision)
 			r.Get("/api/networks/{id}/events", s.networkHandler.HandleNetworkProvisionEvents)
 
-			r.Post("/api/network/setup", s.networkHandler.HandleOldNetworkSetup)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/network/setup", s.networkHandler.HandleOldNetworkSetup)
 			r.Get("/api/network/status", s.networkHandler.HandleOldNetworkStatus)
 		} else {
-			r.Post("/api/networks", handleCreateNetworkStub)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/networks", handleCreateNetworkStub)
 			r.Get("/api/networks", handleListNetworksStub)
 			r.Get("/api/networks/{id}", handleGetNetworkStub)
-			r.Delete("/api/networks/{id}", handleDeleteNetworkStub)
-			r.Post("/api/networks/{id}/provision", handleNetworkProvisionStub)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Delete("/api/networks/{id}", handleDeleteNetworkStub)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/networks/{id}/provision", handleNetworkProvisionStub)
 			r.Get("/api/networks/{id}/events", handleNetworkEventsStub)
 
-			r.Post("/api/network/setup", handleNetworkSetupStub)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/network/setup", handleNetworkSetupStub)
 			r.Get("/api/network/status", handleNetworkStatusStub)
 		}
 	})
 
-	r.Post("/api/vps/{id}/credentials", s.vpsHandler.HandleCredentialsCallback)
+	r.With(RateLimitByIP(s.limiters.credentialsCallback)).Post("/api/vps/{id}/credentials", s.vpsHandler.HandleCredentialsCallback)
 }
 
 func handleListTemplatesStub(w http.ResponseWriter, r *http.Request) {

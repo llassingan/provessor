@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"net/http"
 	"time"
 
@@ -22,6 +23,8 @@ type Server struct {
 	config      *config.Config
 	authService *service.AuthService
 	broker      *sse.EventBroker
+	limiters    serverLimiters
+	csrfSecret  []byte
 
 	sseHandler      *handler.SSEHandler
 	settingsHandler *handler.SettingsHandler
@@ -41,6 +44,10 @@ func New(
 	networkHandler *handler.NetworkHandler,
 	vpsHandler *handler.VPSHandler,
 ) *Server {
+	csrfSecret, err := hex.DecodeString(cfg.DBEncryptionKey)
+	if err != nil {
+		csrfSecret = []byte(cfg.DBEncryptionKey)
+	}
 	s := &Server{
 		router:          chi.NewRouter(),
 		db:              db,
@@ -52,6 +59,8 @@ func New(
 		templateHandler: templateHandler,
 		networkHandler:  networkHandler,
 		vpsHandler:      vpsHandler,
+		limiters:        newServerLimiters(),
+		csrfSecret:      csrfSecret,
 	}
 
 	s.setupCORS()
@@ -84,7 +93,7 @@ func (s *Server) setupCORS() {
 	s.router.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   s.config.CORSOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
