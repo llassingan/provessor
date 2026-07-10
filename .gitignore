@@ -38,3 +38,7 @@ Thumbs.db
 *.tsbuildinfo
 
 **.log
+cmd/getkey
+cmd/dump
+dump
+getkey

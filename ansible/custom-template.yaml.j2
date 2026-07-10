@@ -19,6 +19,23 @@ runcmd:
   - apt-get update && apt-get install -y ansible-core fail2ban
   - systemctl enable fail2ban
   - systemctl start fail2ban
+  # Oracle Cloud Agent — install when Ubuntu snap ships Run Command plugin (v1.61.0+).
+  # Currently unused: ResetPassword uses SSH instead.
+  # - |
+  #   snap wait system seed.loaded
+  #   if snap install oracle-cloud-agent --classic; then
+  #     snap refresh --unhold oracle-cloud-agent
+  #     echo 'ocarun ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/100-oracle-cloud-agent-run-command
+  #     chmod 440 /etc/sudoers.d/100-oracle-cloud-agent-run-command
+  #   fi
+  #   python3 -c "
+  #   import json
+  #   with open('/root/.vpsstore/credentials.json') as f:
+  #       d = json.load(f)
+  #   d['_agent'] = 'installed' if __import__('os').path.exists('/etc/sudoers.d/100-oracle-cloud-agent-run-command') else 'install_failed'
+  #   with open('/root/.vpsstore/credentials.json', 'w') as f:
+  #       json.dump(d, f)
+  #   "
   - systemctl reload ssh
   - ansible-playbook -c local /home/ubuntu/playbook-site.yml
   - mkdir -p /root/.vpsstore
