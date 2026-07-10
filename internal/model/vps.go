@@ -26,6 +26,7 @@ type VPS struct {
 	SSHPrivateKey                   NullString     `json:"-"`
 	SSHUsername                     NullString     `json:"ssh_username"`
 	SSHPassword                     NullString     `json:"ssh_password"`
+	SSHHostKeyFingerprint           sql.NullString `json:"-"`
 	NSGID                           string         `json:"nsg_id"`
 	Provider                        string         `json:"provider"`
 	ProvisioningState               string         `json:"provisioning_state"`

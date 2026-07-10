@@ -23,8 +23,20 @@ type VPSHandler struct {
 	tmplRepo         *repository.TemplateRepository
 	networkRepo      *repository.NetworkRepository
 	settingsRepo     *repository.SettingsRepository
-	provisionService *service.VPSProvisionService
+	provisionService vpsProvisioner
 	jobQueue         *service.JobQueue
+}
+
+type vpsProvisioner interface {
+	VPSRegionForDelete(ctx context.Context, vpsID int64) (string, error)
+	StartInstance(ctx context.Context, vpsID int64) error
+	StopInstance(ctx context.Context, vpsID int64) error
+	RestartInstance(ctx context.Context, vpsID int64) error
+	ResetInstance(ctx context.Context, vpsID int64) error
+	ResetPassword(ctx context.Context, vpsID int64, newPassword string) error
+	GetFirewallRules(ctx context.Context, vpsID int64) ([]service.FirewallRule, error)
+	UpdateFirewallRules(ctx context.Context, vpsID int64, rules []service.FirewallRule) error
+	RefreshInstanceIPs(ctx context.Context, vpsID int64) error
 }
 
 func NewVPSHandler(
@@ -32,7 +44,7 @@ func NewVPSHandler(
 	tmplRepo *repository.TemplateRepository,
 	networkRepo *repository.NetworkRepository,
 	settingsRepo *repository.SettingsRepository,
-	provisionService *service.VPSProvisionService,
+	provisionService vpsProvisioner,
 	jobQueue *service.JobQueue,
 ) *VPSHandler {
 	return &VPSHandler{
@@ -304,6 +316,9 @@ func (h *VPSHandler) HandleCredentialsCallback(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "invalid credentials body")
 		return
 	}
+	if agentStatus, ok := creds["_agent"].(string); ok {
+		log.Printf("[DEBUG] credentials_callback: vps %d agent=%s", id, agentStatus)
+	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "invalid credentials body")
 		return
@@ -548,9 +563,9 @@ func (h *VPSHandler) HandleResetPasswordVPS(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if req.Password == "" {
-		log.Printf("[DEBUG] reset_password: vps %d password is empty", id)
-		writeError(w, http.StatusBadRequest, "password is required")
+	if err := service.ValidateResetPassword(req.Password); err != nil {
+		log.Printf("[DEBUG] reset_password: vps %d password policy failed: %v", id, err)
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -578,6 +593,10 @@ func (h *VPSHandler) HandleResetPasswordVPS(w http.ResponseWriter, r *http.Reque
 
 	if err := h.provisionService.ResetPassword(r.Context(), id, req.Password); err != nil {
 		log.Printf("[DEBUG] reset_password: vps %d reset password failed: %v", id, err)
+		if errors.Is(err, service.ErrResetPasswordPolicy) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
@@ -24,6 +25,11 @@ import (
 	"github.com/llassingan/provessor/internal/logger"
 	"github.com/llassingan/provessor/internal/repository"
 )
+
+type sshHostKeyRepository interface {
+	GetSSHHostKeyFingerprint(ctx context.Context, id int64) (sql.NullString, error)
+	SetSSHHostKeyFingerprintIfUnset(ctx context.Context, id int64, fingerprint string) (bool, error)
+}
 
 type OCIComputeService struct {
 	settingsRepo *repository.SettingsRepository
@@ -215,17 +221,17 @@ func (s *OCIComputeService) GetCompartmentOCID(ctx context.Context) (string, err
 }
 
 type LaunchInstanceParams struct {
-	Region             string
-	CompartmentOCID    string
-	SubnetOCID         string
-	DisplayName        string
-	Shape              string
-	OCPU               float64
-	MemoryGB           float64
-	BootVolumeSizeGB   int
-	CloudInitYAML      string
-	NSGID              string
-	SSHPublicKey       string
+	Region           string
+	CompartmentOCID  string
+	SubnetOCID       string
+	DisplayName      string
+	Shape            string
+	OCPU             float64
+	MemoryGB         float64
+	BootVolumeSizeGB int
+	CloudInitYAML    string
+	NSGID            string
+	SSHPublicKey     string
 }
 
 func (s *OCIComputeService) LaunchInstance(ctx context.Context, params LaunchInstanceParams) (string, error) {
@@ -242,13 +248,13 @@ func (s *OCIComputeService) LaunchInstance(ctx context.Context, params LaunchIns
 
 	s.log.Debug("oci_finding_image", "shape", params.Shape)
 	images, err := computeClient.ListImages(ctx, core.ListImagesRequest{
-		CompartmentId:           common.String(params.CompartmentOCID),
-		OperatingSystem:         common.String("Canonical Ubuntu"),
-		OperatingSystemVersion:  common.String("22.04"),
-		Shape:                   common.String(params.Shape),
-		SortBy:                  core.ListImagesSortByTimecreated,
-		SortOrder:               core.ListImagesSortOrderDesc,
-		Limit:                   common.Int(1),
+		CompartmentId:          common.String(params.CompartmentOCID),
+		OperatingSystem:        common.String("Canonical Ubuntu"),
+		OperatingSystemVersion: common.String("22.04"),
+		Shape:                  common.String(params.Shape),
+		SortBy:                 core.ListImagesSortByTimecreated,
+		SortOrder:              core.ListImagesSortOrderDesc,
+		Limit:                  common.Int(1),
 	})
 	if err != nil {
 		s.log.Error("oci_list_images_failed", "error", err)
@@ -469,7 +475,7 @@ func GenerateSSHKeyPair() (publicKey string, privateKeyPEM string, err error) {
 
 // SSHCreateUser connects to an instance via SSH using the provided private key
 // and creates a new user with the given password.
-func SSHCreateUser(host string, privateKeyPEM string, username string, password string) error {
+func SSHCreateUser(ctx context.Context, hostKeyRepo sshHostKeyRepository, vpsID int64, host string, privateKeyPEM string, username string, password string) error {
 	signer, err := ssh.ParsePrivateKey([]byte(privateKeyPEM))
 	if err != nil {
 		return fmt.Errorf("parse private key: %w", err)
@@ -480,12 +486,11 @@ func SSHCreateUser(host string, privateKeyPEM string, username string, password 
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signer),
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         15 * time.Second,
+		Timeout: 15 * time.Second,
 	}
 
 	addr := net.JoinHostPort(host, "22")
-	client, err := ssh.Dial("tcp", addr, config)
+	client, err := dialSSHWithHostKeyPin(ctx, hostKeyRepo, vpsID, "tcp", addr, config)
 	if err != nil {
 		return fmt.Errorf("ssh dial %s: %w", addr, err)
 	}
@@ -498,11 +503,11 @@ func SSHCreateUser(host string, privateKeyPEM string, username string, password 
 	defer session.Close()
 
 	innerCmd := fmt.Sprintf(
-		"{ id -u %[1]s 2>/dev/null || useradd -m -s /bin/bash %[1]s; } && echo '%[1]s:%[2]s' | chpasswd && printf 'PasswordAuthentication yes\nChallengeResponseAuthentication yes\n' > /etc/ssh/sshd_config.d/99-provessor.conf && sshd -t && systemctl restart sshd && sshd -T | grep -i passwordauthentication",
-		shellEscapeTight(username),
-		shellEscapeTight(password),
+		"{ id -u %[1]s 2>/dev/null || useradd -m -s /bin/bash %[1]s; } && printf '%%s\n' %[2]s | chpasswd && printf 'PasswordAuthentication yes\nChallengeResponseAuthentication yes\n' > /etc/ssh/sshd_config.d/99-provessor.conf && sshd -t && systemctl restart sshd && sshd -T | grep -i passwordauthentication",
+		shellSingleQuote(username),
+		shellSingleQuote(username+":"+password),
 	)
-	cmd := fmt.Sprintf("sudo bash -c '%s'", strings.ReplaceAll(innerCmd, "'", `'\''`))
+	cmd := fmt.Sprintf("sudo bash -c %s", shellSingleQuote(innerCmd))
 
 	out, err := session.CombinedOutput(cmd)
 	if err != nil {
@@ -515,7 +520,7 @@ func SSHCreateUser(host string, privateKeyPEM string, username string, password 
 // SSHVerifyPasswordLogin tests that a user can authenticate with password.
 // Retries up to 5 times with 5 second pauses between attempts to account
 // for sshd restart propagation delay.
-func SSHVerifyPasswordLogin(host string, username string, password string) error {
+func SSHVerifyPasswordLogin(ctx context.Context, hostKeyRepo sshHostKeyRepository, vpsID int64, host string, username string, password string) error {
 	config := &ssh.ClientConfig{
 		User: username,
 		Auth: []ssh.AuthMethod{
@@ -531,14 +536,13 @@ func SSHVerifyPasswordLogin(host string, username string, password string) error
 				return answers, nil
 			}),
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         10 * time.Second,
+		Timeout: 10 * time.Second,
 	}
 
 	addr := net.JoinHostPort(host, "22")
 	var lastErr error
 	for attempt := 1; attempt <= 5; attempt++ {
-		client, err := ssh.Dial("tcp", addr, config)
+		client, err := dialSSHWithHostKeyPin(ctx, hostKeyRepo, vpsID, "tcp", addr, config)
 		if err == nil {
 			client.Close()
 			return nil
@@ -551,17 +555,105 @@ func SSHVerifyPasswordLogin(host string, username string, password string) error
 	return lastErr
 }
 
-func shellEscapeTight(s string) string {
-	result := make([]byte, 0, len(s)+8)
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == '\'' {
-			result = append(result, '\'', '\\', '\'', '\'')
-		} else {
-			result = append(result, c)
-		}
+// SSHResetPassword connects as ubuntu using the stored private key and changes
+// the target user's password on the instance.
+func SSHResetPassword(ctx context.Context, hostKeyRepo sshHostKeyRepository, vpsID int64, host string, privateKeyPEM string, targetUser string, newPassword string) error {
+	signer, err := ssh.ParsePrivateKey([]byte(privateKeyPEM))
+	if err != nil {
+		return fmt.Errorf("parse private key: %w", err)
 	}
-	return string(result)
+
+	config := &ssh.ClientConfig{
+		User: "ubuntu",
+		Auth: []ssh.AuthMethod{
+			ssh.PublicKeys(signer),
+		},
+		Timeout: 15 * time.Second,
+	}
+
+	addr := net.JoinHostPort(host, "22")
+	client, err := dialSSHWithHostKeyPin(ctx, hostKeyRepo, vpsID, "tcp", addr, config)
+	if err != nil {
+		return fmt.Errorf("ssh dial %s: %w", addr, err)
+	}
+	defer client.Close()
+
+	session, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("new session: %w", err)
+	}
+	defer session.Close()
+
+	cmd := fmt.Sprintf("printf '%%s\\n' %s | sudo chpasswd", shellSingleQuote(targetUser+":"+newPassword))
+	out, err := session.CombinedOutput(cmd)
+	if err != nil {
+		return fmt.Errorf("chpasswd failed: %w (output: %s)", err, string(out))
+	}
+	return nil
+}
+
+func dialSSHWithHostKeyPin(ctx context.Context, hostKeyRepo sshHostKeyRepository, vpsID int64, network string, addr string, config *ssh.ClientConfig) (*ssh.Client, error) {
+	stored, err := hostKeyRepo.GetSSHHostKeyFingerprint(ctx, vpsID)
+	if err != nil {
+		return nil, fmt.Errorf("get ssh host key fingerprint: %w", err)
+	}
+
+	var presentedFingerprint string
+	dialConfig := *config
+	dialConfig.HostKeyCallback = sshHostKeyCallback(stored, &presentedFingerprint, vpsID)
+
+	client, err := ssh.Dial(network, addr, &dialConfig)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyAndPersistSSHHostKey(ctx, hostKeyRepo, vpsID, presentedFingerprint, stored); err != nil {
+		client.Close()
+		return nil, err
+	}
+	return client, nil
+}
+
+func sshHostKeyCallback(stored sql.NullString, presentedFingerprint *string, vpsID int64) ssh.HostKeyCallback {
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		fingerprint := ssh.FingerprintSHA256(key)
+		*presentedFingerprint = fingerprint
+		if stored.Valid && stored.String != "" && stored.String != fingerprint {
+			return fmt.Errorf("ssh host key fingerprint mismatch for vps %d", vpsID)
+		}
+		return nil
+	}
+}
+
+func verifyAndPersistSSHHostKey(ctx context.Context, hostKeyRepo sshHostKeyRepository, vpsID int64, presentedFingerprint string, stored sql.NullString) error {
+	if presentedFingerprint == "" {
+		return fmt.Errorf("ssh host key fingerprint was not presented")
+	}
+	if stored.Valid && stored.String != "" {
+		if stored.String != presentedFingerprint {
+			return fmt.Errorf("ssh host key fingerprint mismatch for vps %d", vpsID)
+		}
+		return nil
+	}
+
+	set, err := hostKeyRepo.SetSSHHostKeyFingerprintIfUnset(ctx, vpsID, presentedFingerprint)
+	if err != nil {
+		return fmt.Errorf("set ssh host key fingerprint: %w", err)
+	}
+	if set {
+		return nil
+	}
+
+	stored, err = hostKeyRepo.GetSSHHostKeyFingerprint(ctx, vpsID)
+	if err != nil {
+		return fmt.Errorf("get ssh host key fingerprint after race: %w", err)
+	}
+	if !stored.Valid || stored.String == "" {
+		return fmt.Errorf("ssh host key fingerprint was not persisted")
+	}
+	if stored.String != presentedFingerprint {
+		return fmt.Errorf("ssh host key fingerprint mismatch for vps %d", vpsID)
+	}
+	return nil
 }
 
 // ── Network SDK methods (VirtualNetworkClient) ─────────────────────────
@@ -864,9 +956,9 @@ func (s *OCIComputeService) CreateSecurityList(ctx context.Context, region, comp
 			DisplayName:   common.String(displayName),
 			IngressSecurityRules: []core.IngressSecurityRule{
 				{
-					Protocol:    common.String("6"),
-					Source:      common.String("0.0.0.0/0"),
-					SourceType:  core.IngressSecurityRuleSourceTypeCidrBlock,
+					Protocol:   common.String("6"),
+					Source:     common.String("0.0.0.0/0"),
+					SourceType: core.IngressSecurityRuleSourceTypeCidrBlock,
 					TcpOptions: &core.TcpOptions{
 						DestinationPortRange: &core.PortRange{
 							Min: common.Int(22),

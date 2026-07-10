@@ -144,7 +144,7 @@ function Spinner(): JSX.Element {
 export default function VPSManage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const numericId = id ? Number(id) : 0;
+  const numericId = id !== undefined ? Number(id) : 0;
 
   const [instance, setInstance] = useState<VPS | null>(null);
   const [loading, setLoading] = useState(true);
@@ -231,7 +231,7 @@ export default function VPSManage(): JSX.Element {
         <button
           type="button"
           onClick={() => {
-            navigate(`/vps/${instance.id}`);
+            navigate(`/vps/${String(instance.id)}`);
           }}
           className="mb-2 text-sm font-medium text-primary-600 hover:text-primary-500"
         >
@@ -251,7 +251,7 @@ export default function VPSManage(): JSX.Element {
           { label: "Public IP", value: instance.public_ip ?? "—", refreshable: true },
           { label: "Shape", value: instance.shape },
           { label: "OCPU", value: String(instance.ocpu) },
-          { label: "Memory", value: `${instance.memory_gb} GB` },
+          { label: "Memory", value: `${String(instance.memory_gb)} GB` },
         ].map((info) => (
           <div
             key={info.label}
@@ -333,7 +333,7 @@ export default function VPSManage(): JSX.Element {
       )}
       {activeTab === "reset" && (
         <ResetTab vpsId={instance.id} onSuccess={() => {
-          navigate(`/vps/${instance.id}`);
+          navigate(`/vps/${String(instance.id)}`);
         }} />
       )}
     </div>
@@ -735,26 +735,54 @@ function PasswordTab({ vpsId }: { vpsId: number }): JSX.Element {
   const [confirm, setConfirm] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [updatedPassword, setUpdatedPassword] = useState("");
+  const [showUpdatedPassword, setShowUpdatedPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
-  const handleSubmit = async (): Promise<void> => {
-    setMessage("");
-    setError("");
-
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters.");
-      return;
+  const validatePassword = (): boolean => {
+    if (password.trim() === "") {
+      setError("Password cannot be empty or whitespace only.");
+      return false;
+    }
+    if (/[\n\r\0]/.test(password)) {
+      setError("Password cannot contain new lines or NUL characters.");
+      return false;
+    }
+    if (password.length < 12) {
+      setError("Password must be at least 12 characters.");
+      return false;
+    }
+    if (password.length > 128) {
+      setError("Password must be 128 characters or fewer.");
+      return false;
     }
     if (password !== confirm) {
       setError("Passwords do not match.");
-      return;
+      return false;
     }
+    return true;
+  };
+
+  const handleSubmit = async (): Promise<void> => {
+    setMessage("");
+    setError("");
+    setUpdatedPassword("");
+    setShowUpdatedPassword(false);
+
+    if (!validatePassword()) return;
 
     setLoading(true);
     try {
-      await vps.resetPassword(vpsId, password);
+      const updated = await vps.resetPassword(vpsId, password);
+      if (updated.ssh_password === undefined || updated.ssh_password === "") {
+        setError(
+          "Password reset response did not include the updated SSH password.",
+        );
+        return;
+      }
+      setUpdatedPassword(updated.ssh_password);
       setMessage("Password reset successfully.");
       setPassword("");
       setConfirm("");
@@ -786,9 +814,61 @@ function PasswordTab({ vpsId }: { vpsId: number }): JSX.Element {
           Reset Instance Password
         </h3>
         <p className="mb-4 text-xs text-amber-600">
-          This will set a new root/admin password on the instance. The old
+          This will set a new password for the provisioned SSH user. The old
           password will no longer work.
         </p>
+
+        {updatedPassword !== "" && (
+          <div className="mb-4 rounded-lg border border-emerald-200 bg-white p-3">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <span className="text-xs font-semibold text-emerald-800">
+                Updated SSH Password
+              </span>
+              <span className="text-xs text-emerald-700">
+                Store this securely. It is shown because you just reset it.
+              </span>
+            </div>
+            <div className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2">
+              <code className="break-all rounded bg-gray-200 px-1.5 py-0.5 text-xs text-gray-900">
+                {showUpdatedPassword ? updatedPassword : "••••••••"}
+              </code>
+              <div className="ml-3 flex shrink-0 items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowUpdatedPassword((v) => !v);
+                  }}
+                  className="rounded p-1 text-gray-400 hover:text-gray-600"
+                  title={showUpdatedPassword ? "Hide password" : "Show password"}
+                >
+                  <EyeIcon open={showUpdatedPassword} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(updatedPassword);
+                  }}
+                  className="rounded p-1 text-gray-400 hover:text-gray-600"
+                  title="Copy updated SSH password"
+                >
+                  <svg
+                    className="h-3.5 w-3.5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={1.5}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184"
+                    />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="space-y-4">
           <div>
@@ -802,7 +882,7 @@ function PasswordTab({ vpsId }: { vpsId: number }): JSX.Element {
                 onChange={(e) => {
                   setPassword(e.target.value);
                 }}
-                placeholder="Min. 8 characters"
+                placeholder="12 to 128 characters"
                 className="w-full rounded-lg border border-gray-300 px-3 py-2 pr-10 text-sm focus:border-amber-500 focus:outline-none focus:ring-1 focus:ring-amber-500"
               />
               <button
@@ -811,6 +891,7 @@ function PasswordTab({ vpsId }: { vpsId: number }): JSX.Element {
                   setShowPassword((v) => !v);
                 }}
                 className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                title={showPassword ? "Hide password" : "Show password"}
               >
                 <EyeIcon open={showPassword} />
               </button>
@@ -837,6 +918,7 @@ function PasswordTab({ vpsId }: { vpsId: number }): JSX.Element {
                   setShowConfirm((v) => !v);
                 }}
                 className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                title={showConfirm ? "Hide password" : "Show password"}
               >
                 <EyeIcon open={showConfirm} />
               </button>

@@ -247,3 +247,65 @@ func TestUpdatePreservesCredentialsReceivedByCallback(t *testing.T) {
 		t.Fatalf("expected normal update to keep working, got status %s", updated.Status)
 	}
 }
+
+func TestUpdateSSHPasswordOnlyUpdatesPassword(t *testing.T) {
+	_, repo := setupVPSRepositoryTest(t)
+	vps := createVPSForCallbackTest(t, repo, "running")
+	vps.SSHUsername = model.NullString{NullString: sql.NullString{String: "appuser", Valid: true}}
+	vps.SSHPassword = model.NullString{NullString: sql.NullString{String: "old-password", Valid: true}}
+	if err := repo.Update(context.Background(), vps); err != nil {
+		t.Fatalf("seed ssh credentials: %v", err)
+	}
+
+	if err := repo.UpdateSSHPassword(context.Background(), vps.ID, "new-password"); err != nil {
+		t.Fatalf("update ssh password: %v", err)
+	}
+
+	updated, err := repo.Get(context.Background(), vps.ID)
+	if err != nil {
+		t.Fatalf("get vps: %v", err)
+	}
+	if updated.SSHUsername.String != "appuser" {
+		t.Fatalf("ssh username changed: %q", updated.SSHUsername.String)
+	}
+	if !updated.SSHPassword.Valid || updated.SSHPassword.String != "new-password" {
+		t.Fatalf("ssh password not updated: %#v", updated.SSHPassword)
+	}
+}
+
+func TestSSHHostKeyFingerprintSetIfUnset(t *testing.T) {
+	_, repo := setupVPSRepositoryTest(t)
+	vps := createVPSForCallbackTest(t, repo, "running")
+
+	set, err := repo.SetSSHHostKeyFingerprintIfUnset(context.Background(), vps.ID, "SHA256:first")
+	if err != nil {
+		t.Fatalf("set fingerprint: %v", err)
+	}
+	if !set {
+		t.Fatal("expected first fingerprint to be stored")
+	}
+
+	set, err = repo.SetSSHHostKeyFingerprintIfUnset(context.Background(), vps.ID, "SHA256:second")
+	if err != nil {
+		t.Fatalf("set second fingerprint: %v", err)
+	}
+	if set {
+		t.Fatal("second fingerprint should not overwrite existing value")
+	}
+
+	fingerprint, err := repo.GetSSHHostKeyFingerprint(context.Background(), vps.ID)
+	if err != nil {
+		t.Fatalf("get fingerprint: %v", err)
+	}
+	if !fingerprint.Valid || fingerprint.String != "SHA256:first" {
+		t.Fatalf("unexpected fingerprint: %#v", fingerprint)
+	}
+
+	updated, err := repo.Get(context.Background(), vps.ID)
+	if err != nil {
+		t.Fatalf("get vps: %v", err)
+	}
+	if !updated.SSHHostKeyFingerprint.Valid || updated.SSHHostKeyFingerprint.String != "SHA256:first" {
+		t.Fatalf("fingerprint not scanned on VPS: %#v", updated.SSHHostKeyFingerprint)
+	}
+}

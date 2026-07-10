@@ -46,14 +46,14 @@ func (r *VPSRepository) List(ctx context.Context, status string) ([]model.VPS, e
 			`SELECT id, display_name, template_id, network_id, shape, ocpu, memory_gb, boot_volume_size_gb,
 				oci_instance_id, public_ip, private_ip, status, initial_credentials,
 				credentials_callback_token_hash, credentials_callback_token_expires_at, credentials_callback_token_used_at, credentials_received_at,
-				ssh_username, ssh_password, nsg_id, provider, provisioning_state, created_at, updated_at
+				ssh_username, ssh_password, ssh_host_key_fingerprint, nsg_id, provider, provisioning_state, created_at, updated_at
 			FROM vps WHERE status = ? ORDER BY created_at DESC`, status)
 	} else {
 		rows, err = r.db.QueryContext(ctx,
 			`SELECT id, display_name, template_id, network_id, shape, ocpu, memory_gb, boot_volume_size_gb,
 				oci_instance_id, public_ip, private_ip, status, initial_credentials,
 				credentials_callback_token_hash, credentials_callback_token_expires_at, credentials_callback_token_used_at, credentials_received_at,
-				ssh_username, ssh_password, nsg_id, provider, provisioning_state, created_at, updated_at
+				ssh_username, ssh_password, ssh_host_key_fingerprint, nsg_id, provider, provisioning_state, created_at, updated_at
 			FROM vps ORDER BY created_at DESC`)
 	}
 	if err != nil {
@@ -68,7 +68,7 @@ func (r *VPSRepository) List(ctx context.Context, status string) ([]model.VPS, e
 			&v.ID, &v.DisplayName, &v.TemplateID, &v.NetworkID, &v.Shape, &v.OCPU, &v.MemoryGB, &v.BootVolumeSizeGB,
 			&v.OCIInstanceID, &v.PublicIP, &v.PrivateIP, &v.Status, &v.InitialCredentials,
 			&v.CredentialsCallbackTokenHash, &v.CredentialsCallbackTokenExpires, &v.CredentialsCallbackTokenUsedAt, &v.CredentialsReceivedAt,
-			&v.SSHUsername, &v.SSHPassword,
+			&v.SSHUsername, &v.SSHPassword, &v.SSHHostKeyFingerprint,
 			&v.NSGID, &v.Provider, &v.ProvisioningState,
 			&v.CreatedAt, &v.UpdatedAt,
 		)
@@ -90,13 +90,13 @@ func (r *VPSRepository) Get(ctx context.Context, id int64) (*model.VPS, error) {
 		`SELECT id, display_name, template_id, network_id, shape, ocpu, memory_gb, boot_volume_size_gb,
 			oci_instance_id, public_ip, private_ip, status, initial_credentials,
 			credentials_callback_token_hash, credentials_callback_token_expires_at, credentials_callback_token_used_at, credentials_received_at,
-			ssh_private_key, ssh_username, ssh_password, nsg_id, provider, provisioning_state, created_at, updated_at
+			ssh_private_key, ssh_username, ssh_password, ssh_host_key_fingerprint, nsg_id, provider, provisioning_state, created_at, updated_at
 		FROM vps WHERE id = ?`, id,
 	).Scan(
 		&v.ID, &v.DisplayName, &v.TemplateID, &v.NetworkID, &v.Shape, &v.OCPU, &v.MemoryGB, &v.BootVolumeSizeGB,
 		&v.OCIInstanceID, &v.PublicIP, &v.PrivateIP, &v.Status, &v.InitialCredentials,
 		&v.CredentialsCallbackTokenHash, &v.CredentialsCallbackTokenExpires, &v.CredentialsCallbackTokenUsedAt, &v.CredentialsReceivedAt,
-		&v.SSHPrivateKey, &v.SSHUsername, &v.SSHPassword,
+		&v.SSHPrivateKey, &v.SSHUsername, &v.SSHPassword, &v.SSHHostKeyFingerprint,
 		&v.NSGID, &v.Provider, &v.ProvisioningState,
 		&v.CreatedAt, &v.UpdatedAt,
 	)
@@ -140,6 +140,38 @@ func (r *VPSRepository) UpdateStatus(ctx context.Context, id int64, status strin
 		`UPDATE vps SET status=?, updated_at=? WHERE id=?`,
 		status, time.Now().UTC(), id)
 	return err
+}
+
+func (r *VPSRepository) UpdateSSHPassword(ctx context.Context, id int64, password string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE vps SET ssh_password=?, updated_at=? WHERE id=?`,
+		password, time.Now().UTC(), id)
+	return err
+}
+
+func (r *VPSRepository) GetSSHHostKeyFingerprint(ctx context.Context, id int64) (sql.NullString, error) {
+	var fingerprint sql.NullString
+	err := r.db.QueryRowContext(ctx,
+		`SELECT ssh_host_key_fingerprint FROM vps WHERE id=?`, id,
+	).Scan(&fingerprint)
+	if err == sql.ErrNoRows {
+		return sql.NullString{}, nil
+	}
+	return fingerprint, err
+}
+
+func (r *VPSRepository) SetSSHHostKeyFingerprintIfUnset(ctx context.Context, id int64, fingerprint string) (bool, error) {
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE vps SET ssh_host_key_fingerprint=?, updated_at=? WHERE id=? AND (ssh_host_key_fingerprint IS NULL OR ssh_host_key_fingerprint = '')`,
+		fingerprint, time.Now().UTC(), id)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows == 1, nil
 }
 
 func (r *VPSRepository) SetCredentialsCallbackToken(ctx context.Context, id int64, tokenHash string, expiresAt time.Time) error {

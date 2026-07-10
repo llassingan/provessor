@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
@@ -18,6 +19,125 @@ import (
 	"github.com/llassingan/provessor/internal/repository"
 	"github.com/llassingan/provessor/internal/sse"
 )
+
+var ErrResetPasswordPolicy = errors.New("reset password policy violation")
+
+// ── OCI Instance Agent (retained for future use) ─────────────────────
+// These are intentionally unused. The Oracle Cloud Agent snap on Ubuntu
+// does not yet ship the Compute Instance Run Command plugin (as of
+// v1.60.0). ResetPassword uses SSH instead. Restore these when Oracle
+// releases a snap with Run Command for Ubuntu (announced for v1.61.0).
+// ─────────────────────────────────────────────────────────────────────
+
+var createInstanceAgentCommand = func(ctx context.Context, computeService *OCIComputeService, region string, request computeinstanceagent.CreateInstanceAgentCommandRequest) (string, error) {
+	instanceAgentClient, err := computeService.GetInstanceAgentClient(ctx, region)
+	if err != nil {
+		return "", fmt.Errorf("get instance agent client: %w", err)
+	}
+	response, err := instanceAgentClient.CreateInstanceAgentCommand(ctx, request)
+	if err != nil {
+		return "", err
+	}
+	if response.InstanceAgentCommand.Id == nil || *response.InstanceAgentCommand.Id == "" {
+		return "", fmt.Errorf("instance agent command response missing command id")
+	}
+	return *response.InstanceAgentCommand.Id, nil
+}
+
+var waitInstanceAgentCommandExecution = func(ctx context.Context, computeService *OCIComputeService, region string, instanceID string, commandID string) error {
+	instanceAgentClient, err := computeService.GetInstanceAgentClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("get instance agent client: %w", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Minute)
+	startTime := time.Now()
+	var lastState string
+	for {
+		response, err := instanceAgentClient.GetInstanceAgentCommandExecution(ctx, computeinstanceagent.GetInstanceAgentCommandExecutionRequest{
+			InstanceAgentCommandId: common.String(commandID),
+			InstanceId:             common.String(instanceID),
+		})
+		if err != nil {
+			return fmt.Errorf("get instance agent command execution: %w", err)
+		}
+
+		elapsed := time.Since(startTime).Round(time.Second)
+		execution := response.InstanceAgentCommandExecution
+		currentState := string(execution.LifecycleState)
+		if currentState != lastState {
+			log.Printf("[DEBUG] wait_agent_command: command=%s state=%s elapsed=%s", maskOCID(commandID), currentState, elapsed)
+			lastState = currentState
+		}
+		switch execution.LifecycleState {
+		case computeinstanceagent.InstanceAgentCommandExecutionLifecycleStateSucceeded:
+			if execution.Content != nil && execution.Content.GetExitCode() != nil && *execution.Content.GetExitCode() != 0 {
+				return fmt.Errorf("instance agent command exited with code %d", *execution.Content.GetExitCode())
+			}
+			return nil
+		case computeinstanceagent.InstanceAgentCommandExecutionLifecycleStateFailed,
+			computeinstanceagent.InstanceAgentCommandExecutionLifecycleStateTimedOut,
+			computeinstanceagent.InstanceAgentCommandExecutionLifecycleStateCanceled:
+			return fmt.Errorf("instance agent command execution ended with state %s", execution.LifecycleState)
+		}
+
+		if time.Now().After(deadline) {
+			log.Printf("[DEBUG] wait_agent_command: command=%s deadline exceeded, last_state=%s elapsed=%s", maskOCID(commandID), lastState, elapsed)
+			return fmt.Errorf("instance agent command execution did not complete before timeout")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+var getComputeCompartmentOCID = func(ctx context.Context, computeService *OCIComputeService) (string, error) {
+	return computeService.GetCompartmentOCID(ctx)
+}
+
+var sshCreateUserFn = SSHCreateUser
+var sshVerifyPasswordLoginFn = SSHVerifyPasswordLogin
+var sshResetPasswordFn = SSHResetPassword
+var checkInstanceAgentAvailable = func(ctx context.Context, computeService *OCIComputeService, region, instanceID string) error {
+	inst, err := computeService.GetInstance(ctx, region, instanceID)
+	if err != nil {
+		log.Printf("[DEBUG] check_agent: get instance failed, proceeding anyway: %v", err)
+		return nil
+	}
+	if inst.AgentConfig == nil || len(inst.AgentConfig.PluginsConfig) == 0 {
+		log.Printf("[DEBUG] check_agent: agent config is empty, proceeding anyway (agent may be snap-installed)")
+		return nil
+	}
+	for _, p := range inst.AgentConfig.PluginsConfig {
+		if p.Name != nil && *p.Name == "Compute Instance Run Command" {
+			if p.DesiredState == core.InstanceAgentPluginConfigDetailsDesiredStateEnabled {
+				return nil
+			}
+			log.Printf("[DEBUG] check_agent: Run Command plugin desired state is %q, proceeding anyway", p.DesiredState)
+			return nil
+		}
+	}
+	log.Printf("[DEBUG] check_agent: Run Command plugin not found in agent config, proceeding anyway (agent may be snap-installed)")
+	return nil
+}
+
+func ValidateResetPassword(password string) error {
+	if len(password) < 12 {
+		return fmt.Errorf("%w: password must be at least 12 characters", ErrResetPasswordPolicy)
+	}
+	if len(password) > 128 {
+		return fmt.Errorf("%w: password must be at most 128 characters", ErrResetPasswordPolicy)
+	}
+	if strings.TrimSpace(password) == "" {
+		return fmt.Errorf("%w: password must not be whitespace only", ErrResetPasswordPolicy)
+	}
+	if strings.ContainsAny(password, "\n\r\x00") {
+		return fmt.Errorf("%w: password must not contain newline, carriage return, or NUL", ErrResetPasswordPolicy)
+	}
+	return nil
+}
 
 type VPSProvisionService struct {
 	computeService  *OCIComputeService
@@ -277,7 +397,7 @@ func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) err
 
 		var sshErr error
 		for attempt := 1; attempt <= 20; attempt++ {
-			sshErr = SSHCreateUser(publicIP, privateKeyPEM, sshUser, sshPass)
+			sshErr = sshCreateUserFn(ctx, s.vpsRepo, vpsID, publicIP, privateKeyPEM, sshUser, sshPass)
 			if sshErr == nil {
 				emit("ssh_connected", "provisioning", "SSH user created successfully")
 				break
@@ -303,7 +423,7 @@ func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) err
 		vps.SSHPassword = model.NullString{NullString: sql.NullString{String: sshPass, Valid: true}}
 		log.Printf("[DEBUG] provision_vps: vps %d SSH credentials saved user=%s", vpsID, sshUser)
 
-		if verifyErr := SSHVerifyPasswordLogin(publicIP, sshUser, sshPass); verifyErr != nil {
+		if verifyErr := sshVerifyPasswordLoginFn(ctx, s.vpsRepo, vpsID, publicIP, sshUser, sshPass); verifyErr != nil {
 			log.Printf("[DEBUG] provision_vps: vps %d password login VERIFICATION FAILED: %v", vpsID, verifyErr)
 		} else {
 			log.Printf("[DEBUG] provision_vps: vps %d password login verified OK for user=%s", vpsID, sshUser)
@@ -727,6 +847,10 @@ func (s *VPSProvisionService) ResetInstance(ctx context.Context, vpsID int64) er
 }
 
 func (s *VPSProvisionService) ResetPassword(ctx context.Context, vpsID int64, newPassword string) error {
+	if err := ValidateResetPassword(newPassword); err != nil {
+		return err
+	}
+
 	vps, err := s.vpsRepo.Get(ctx, vpsID)
 	if err != nil {
 		return fmt.Errorf("get vps: %w", err)
@@ -742,44 +866,30 @@ func (s *VPSProvisionService) ResetPassword(ctx context.Context, vpsID int64, ne
 	if vps.Status != "running" {
 		return fmt.Errorf("vps must be running to reset password, current: %s", vps.Status)
 	}
-
-	region, err := s.vpsRegion(ctx, vpsID)
-	if err != nil {
-		return err
+	if !vps.SSHUsername.Valid || vps.SSHUsername.String == "" {
+		return fmt.Errorf("vps has no provisioned SSH username")
+	}
+	if vps.SSHUsername.String == "root" {
+		return fmt.Errorf("reset password cannot target root")
+	}
+	if !vps.PublicIP.Valid || vps.PublicIP.String == "" {
+		return fmt.Errorf("vps has no public IP")
 	}
 
-	instanceAgentClient, err := s.computeService.GetInstanceAgentClient(ctx, region)
-	if err != nil {
-		return fmt.Errorf("get instance agent client: %w", err)
+	if !vps.SSHPrivateKey.Valid || vps.SSHPrivateKey.String == "" {
+		return fmt.Errorf("vps has no SSH private key")
 	}
 
-	compartmentOCID, err := s.computeService.GetCompartmentOCID(ctx)
-	if err != nil {
-		return fmt.Errorf("get compartment ocid: %w", err)
+	log.Printf("[DEBUG] reset_password: vps %d resetting password for user %q via SSH", vpsID, vps.SSHUsername.String)
+
+	if err := sshResetPasswordFn(ctx, s.vpsRepo, vpsID, vps.PublicIP.String, vps.SSHPrivateKey.String, vps.SSHUsername.String, newPassword); err != nil {
+		return fmt.Errorf("ssh reset password: %w", err)
 	}
-
-	commandText := fmt.Sprintf("echo 'root:%s' | chpasswd", shellEscape(newPassword))
-
-	timeoutSeconds := 30
-
-	_, err = instanceAgentClient.CreateInstanceAgentCommand(ctx, computeinstanceagent.CreateInstanceAgentCommandRequest{
-		CreateInstanceAgentCommandDetails: computeinstanceagent.CreateInstanceAgentCommandDetails{
-			CompartmentId: common.String(compartmentOCID),
-			Target: &computeinstanceagent.InstanceAgentCommandTarget{
-				InstanceId: common.String(vps.OCIInstanceID.String),
-			},
-			Content: &computeinstanceagent.InstanceAgentCommandContent{
-				Source: computeinstanceagent.InstanceAgentCommandSourceViaTextDetails{
-					Text:       common.String(commandText),
-					TextSha256: nil,
-				},
-				Output: &computeinstanceagent.InstanceAgentCommandOutputViaTextDetails{},
-			},
-			ExecutionTimeOutInSeconds: &timeoutSeconds,
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("create instance agent command: %w", err)
+	if err := sshVerifyPasswordLoginFn(ctx, s.vpsRepo, vpsID, vps.PublicIP.String, vps.SSHUsername.String, newPassword); err != nil {
+		return fmt.Errorf("verify reset password login: %w", err)
+	}
+	if err := s.vpsRepo.UpdateSSHPassword(ctx, vpsID, newPassword); err != nil {
+		return fmt.Errorf("update ssh password: %w", err)
 	}
 
 	s.broker.Publish(fmt.Sprintf("vps:%d", vpsID), sse.SSEEvent{
@@ -837,17 +947,12 @@ func (s *VPSProvisionService) RefreshInstanceIPs(ctx context.Context, vpsID int6
 	return nil
 }
 
-func shellEscape(s string) string {
-	result := make([]byte, 0, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == '\'' {
-			result = append(result, '\'', '\\', '\'', '\'')
-		} else {
-			result = append(result, c)
-		}
-	}
-	return string(result)
+func buildChpasswdCommand(username, password string) string {
+	return fmt.Sprintf("printf '%%s\\n' %s | chpasswd", shellSingleQuote(username+":"+password))
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 type FirewallRule struct {
