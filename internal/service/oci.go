@@ -7,7 +7,6 @@ import (
 	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net"
@@ -310,9 +309,8 @@ func (s *OCIComputeService) LaunchInstance(ctx context.Context, params LaunchIns
 		}
 	}
 
-	if body, err := json.Marshal(request.LaunchInstanceDetails); err == nil {
-		s.log.Debug("oci_launch_request_body", "body", string(body))
-	}
+	// Omit full request body from logs — contains cloud-init with callback tokens, SSH keys, and playbook content.
+	s.log.Debug("oci_launch_instance_request", "display_name", params.DisplayName, "shape", params.Shape, "ad", ad)
 
 	response, err := computeClient.LaunchInstance(ctx, request)
 	if err != nil {
