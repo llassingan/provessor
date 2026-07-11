@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	appdb "github.com/llassingan/provessor/internal/db"
+	"github.com/llassingan/provessor/internal/logger"
 	"github.com/llassingan/provessor/internal/model"
 	"github.com/llassingan/provessor/internal/repository"
 )
@@ -36,7 +37,8 @@ func setupCredentialsCallbackHandlerTest(t *testing.T) (*sql.DB, *repository.VPS
 	}
 
 	repo := repository.NewVPSRepository(database)
-	return database, repo, NewVPSHandler(repo, nil, nil, nil, nil, nil)
+	auditRepo := repository.NewAuditLogRepository(database)
+	return database, repo, NewVPSHandler(repo, nil, nil, nil, nil, nil, logger.Nop(), auditRepo)
 }
 
 func createCallbackVPS(t *testing.T, repo *repository.VPSRepository, token string, expiresAt time.Time) *model.VPS {

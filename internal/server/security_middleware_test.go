@@ -19,7 +19,7 @@ var testCSRFSecret = []byte("0123456789abcdef0123456789abcdef")
 func TestRateLimitLoginReturnsTooManyRequestsAfterThreshold(t *testing.T) {
 	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
 	limiter := newRateLimiter(2, time.Minute, func() time.Time { return now })
-	handler := RateLimitByIP(limiter)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RateLimitByIP(limiter, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
 	}))
 
@@ -49,7 +49,7 @@ func TestRateLimitLoginReturnsTooManyRequestsAfterThreshold(t *testing.T) {
 func TestRateLimitCallbackUsesRemoteAddrAndIgnoresForwardedHeaders(t *testing.T) {
 	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
 	limiter := newRateLimiter(1, time.Minute, func() time.Time { return now })
-	handler := RateLimitByIP(limiter)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RateLimitByIP(limiter, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
@@ -72,7 +72,7 @@ func TestRateLimitCallbackUsesRemoteAddrAndIgnoresForwardedHeaders(t *testing.T)
 func TestRateLimitBucketsRecoverAfterWindow(t *testing.T) {
 	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
 	limiter := newRateLimiter(1, time.Minute, func() time.Time { return now })
-	handler := RateLimitByIP(limiter)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RateLimitByIP(limiter, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
@@ -95,7 +95,7 @@ func TestRateLimitBucketsRecoverAfterWindow(t *testing.T) {
 func TestRateLimitSkipsOptions(t *testing.T) {
 	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
 	limiter := newRateLimiter(1, time.Minute, func() time.Time { return now })
-	handler := RateLimitByIP(limiter)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RateLimitByIP(limiter, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
@@ -114,7 +114,7 @@ func TestRateLimitSkipsOptions(t *testing.T) {
 func TestRateLimitAPIByIPOnlyCountsAPIRoutes(t *testing.T) {
 	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
 	limiter := newRateLimiter(1, time.Minute, func() time.Time { return now })
-	handler := RateLimitAPIByIP(limiter)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RateLimitAPIByIP(limiter, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
@@ -138,7 +138,7 @@ func TestRateLimitAPIByIPOnlyCountsAPIRoutes(t *testing.T) {
 func TestRateLimitUserActionsDoNotAffectUnrelatedUsers(t *testing.T) {
 	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
 	limiter := newRateLimiter(1, time.Minute, func() time.Time { return now })
-	handler := RateLimitByUser(limiter)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RateLimitByUser(limiter, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
@@ -237,7 +237,7 @@ func TestCSRFSafeMethodsAndOptionsDoNotRequireToken(t *testing.T) {
 
 func TestCredentialsCallbackLimiterDoesNotRequireCSRFToken(t *testing.T) {
 	router := chi.NewRouter()
-	router.With(RateLimitByIP(newRateLimiter(10, time.Minute, time.Now))).Post("/api/vps/{id}/credentials", func(w http.ResponseWriter, r *http.Request) {
+	router.With(RateLimitByIP(newRateLimiter(10, time.Minute, time.Now), nil)).Post("/api/vps/{id}/credentials", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 

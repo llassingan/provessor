@@ -13,6 +13,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	appdb "github.com/llassingan/provessor/internal/db"
+	"github.com/llassingan/provessor/internal/logger"
 	"github.com/llassingan/provessor/internal/model"
 	"github.com/llassingan/provessor/internal/repository"
 	"github.com/llassingan/provessor/internal/sse"
@@ -39,10 +40,13 @@ func setupProvisionSecurityTest(t *testing.T) (*sql.DB, *repository.VPSRepositor
 
 	vpsRepo := repository.NewVPSRepository(database)
 	networkRepo := repository.NewNetworkRepository(database)
+	auditRepo := repository.NewAuditLogRepository(database)
 	service := &VPSProvisionService{
 		vpsRepo:     vpsRepo,
 		networkRepo: networkRepo,
 		broker:      sse.NewEventBroker(),
+		log:         logger.Nop(),
+		audit:       auditRepo,
 	}
 	return database, vpsRepo, networkRepo, service
 }

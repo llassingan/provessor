@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	appdb "github.com/llassingan/provessor/internal/db"
+	"github.com/llassingan/provessor/internal/logger"
 	"github.com/llassingan/provessor/internal/model"
 	"github.com/llassingan/provessor/internal/repository"
 	"github.com/llassingan/provessor/internal/service"
@@ -51,7 +52,7 @@ func performResetPassword(handler *VPSHandler, id string, body string) *httptest
 }
 
 func TestHandleResetPasswordRejectsPolicyFailuresBeforeService(t *testing.T) {
-	handler := &VPSHandler{}
+	handler := &VPSHandler{log: logger.Nop()}
 	cases := []struct {
 		name string
 		body string
@@ -107,7 +108,7 @@ func TestHandleResetPasswordValidResetReturnsUpdatedVPSWithPassword(t *testing.T
 		t.Fatalf("seed ssh password: %v", err)
 	}
 
-	handler := NewVPSHandler(repo, nil, nil, nil, resetPasswordProvisioner{repo: repo}, nil)
+	handler := NewVPSHandler(repo, nil, nil, nil, resetPasswordProvisioner{repo: repo}, nil, logger.Nop(), nil)
 	res := performResetPassword(handler, "1", `{"password":"valid-password12"}`)
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", res.Code, res.Body.String())
