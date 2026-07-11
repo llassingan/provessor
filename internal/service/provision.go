@@ -15,6 +15,7 @@ import (
 	"github.com/oracle/oci-go-sdk/v65/computeinstanceagent"
 	"github.com/oracle/oci-go-sdk/v65/core"
 
+	"github.com/llassingan/provessor/internal/logger"
 	"github.com/llassingan/provessor/internal/model"
 	"github.com/llassingan/provessor/internal/repository"
 	"github.com/llassingan/provessor/internal/sse"
@@ -148,6 +149,8 @@ type VPSProvisionService struct {
 	broker          *sse.EventBroker
 	settingsRepo    *repository.SettingsRepository
 	apiURL          string
+	log             *logger.Logger
+	audit           *repository.AuditLogRepository
 }
 
 func NewVPSProvisionService(
@@ -159,6 +162,8 @@ func NewVPSProvisionService(
 	broker *sse.EventBroker,
 	settingsRepo *repository.SettingsRepository,
 	apiURL string,
+	log *logger.Logger,
+	audit *repository.AuditLogRepository,
 ) *VPSProvisionService {
 	return &VPSProvisionService{
 		computeService:  computeService,
@@ -169,10 +174,22 @@ func NewVPSProvisionService(
 		broker:          broker,
 		settingsRepo:    settingsRepo,
 		apiURL:          apiURL,
+		log:             log,
+		audit:           audit,
 	}
 }
 
-func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) error {
+func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) (err error) {
+	defer func() {
+		status := "success"
+		errMsg := ""
+		if err != nil {
+			status = "failure"
+			errMsg = sanitize(err.Error())
+		}
+		s.audit.Log(ctx, model.AuditLog{Operation: "vps.provision", ResourceType: "vps", ResourceID: vpsID, Status: status, ErrorMessage: errMsg})
+	}()
+
 	channel := fmt.Sprintf("vps:%d", vpsID)
 
 	emit := func(step, status, message string) {
@@ -231,7 +248,7 @@ func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) err
 	}
 
 	emit("generating_keys", "provisioning", "Generating SSH key pair")
-	log.Printf("[DEBUG] provision_vps: vps %d generating SSH key pair", vpsID)
+	s.log.Debug("provision_vps_generating_ssh_key", "vps_id", vpsID)
 
 	publicKey, privateKeyPEM, err := GenerateSSHKeyPair()
 	if err != nil {
@@ -240,7 +257,7 @@ func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) err
 		return fmt.Errorf("generate SSH key pair: %w", err)
 	}
 
-	log.Printf("[DEBUG] provision_vps: vps %d SSH key pair generated", vpsID)
+	s.log.Debug("provision_vps_ssh_key_generated", "vps_id", vpsID)
 
 	callbackToken, err := repository.GenerateCredentialsCallbackToken()
 	if err != nil {
@@ -259,7 +276,7 @@ func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) err
 	cloudInitYAML = strings.ReplaceAll(cloudInitYAML, "INSTANCE_ID", fmt.Sprintf("%d", vpsID))
 	cloudInitYAML = strings.ReplaceAll(cloudInitYAML, "API_TOKEN", callbackToken)
 
-	log.Printf("[DEBUG] provision_vps: vps %d cloud-init prepared (len=%d)", vpsID, len(cloudInitYAML))
+	s.log.Debug("provision_vps_cloud_init_prepared", "vps_id", vpsID, "len", len(cloudInitYAML))
 
 	// Create NSG before LaunchInstance (Option A: attach at VNIC creation time)
 	emit("creating_nsg", "provisioning", "Creating network security group")
@@ -272,10 +289,10 @@ func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) err
 		return fmt.Errorf("create NSG: %w", nsgErr)
 	}
 	if _, terr := s.vpsResourceRepo.Create(ctx, vpsID, "nsg", nsgID); terr != nil {
-		log.Printf("[WARN] provision_vps: vps %d track NSG failed: %v", vpsID, terr)
+		s.log.Warn("provision_vps_track_nsg_failed", "vps_id", vpsID, "error", terr)
 	}
 	if uerr := s.vpsRepo.UpdateNSGID(ctx, vpsID, nsgID); uerr != nil {
-		log.Printf("[WARN] provision_vps: vps %d save NSG ID failed: %v", vpsID, uerr)
+		s.log.Warn("provision_vps_save_nsg_id_failed", "vps_id", vpsID, "error", uerr)
 	}
 	vps.NSGID = nsgID
 
@@ -334,10 +351,10 @@ func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) err
 
 	_ = s.vpsRepo.UpdateProvisioningState(ctx, vpsID, string(StateCreatingInstance))
 	if _, terr := s.vpsResourceRepo.Create(ctx, vpsID, "instance", instanceID); terr != nil {
-		log.Printf("[WARN] provision_vps: vps %d track instance failed: %v", vpsID, terr)
+		s.log.Warn("provision_vps_track_instance_failed", "vps_id", vpsID, "error", terr)
 	}
 	if uerr := s.vpsResourceRepo.UpdateStatus(ctx, instanceID, "created"); uerr != nil {
-		log.Printf("[WARN] provision_vps: vps %d update resource status failed: %v", vpsID, uerr)
+		s.log.Warn("provision_vps_update_resource_status_failed", "vps_id", vpsID, "error", uerr)
 	}
 
 	vps.OCIInstanceID = model.NullString{NullString: sql.NullString{String: instanceID, Valid: true}}
@@ -349,7 +366,7 @@ func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) err
 
 	emit("waiting_for_boot", "provisioning", "Waiting for instance to boot")
 
-	log.Printf("[DEBUG] provision_vps: vps %d waiting for instance %s to reach RUNNING state", vpsID, instanceID)
+	s.log.Debug("provision_vps_waiting_running", "vps_id", vpsID, "instance_id", instanceID)
 
 	_, err = s.waitForRunning(ctx, vpsID, network.Region, instanceID)
 	if err != nil {
@@ -358,7 +375,7 @@ func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) err
 		return fmt.Errorf("wait for running: %w", err)
 	}
 
-	log.Printf("[DEBUG] provision_vps: vps %d instance %s is now RUNNING", vpsID, instanceID)
+	s.log.Debug("provision_vps_instance_running", "vps_id", vpsID, "instance_id", instanceID)
 
 	vps.OCIInstanceID = model.NullString{NullString: sql.NullString{String: instanceID, Valid: true}}
 	vps.Status = "running"
@@ -367,7 +384,7 @@ func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) err
 
 	compartmentOCID, err = s.computeService.GetCompartmentOCID(ctx)
 	if err != nil {
-		log.Printf("[ERROR] provision_vps: vps %d get compartment OCID failed: %v", vpsID, err)
+		s.log.Error("provision_vps_get_compartment_failed", "vps_id", vpsID, "error", err)
 		emit("error", "failed", "Failed to get compartment: "+err.Error())
 		s.RollbackVPS(ctx, vpsID, network.Region, instanceID)
 		return fmt.Errorf("get compartment: %w", err)
@@ -375,7 +392,7 @@ func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) err
 
 	publicIP, privateIP, ipErr := s.computeService.GetInstanceIPs(ctx, network.Region, instanceID, compartmentOCID)
 	if ipErr != nil {
-		log.Printf("[ERROR] provision_vps: vps %d get instance IPs failed: %v", vpsID, ipErr)
+		s.log.Error("provision_vps_get_ips_failed", "vps_id", vpsID, "error", ipErr)
 		emit("error", "failed", "Failed to retrieve instance IPs: "+ipErr.Error())
 		s.RollbackVPS(ctx, vpsID, network.Region, instanceID)
 		return fmt.Errorf("get instance IPs: %w", ipErr)
@@ -387,13 +404,13 @@ func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) err
 	if privateIP != "" {
 		vps.PrivateIP = model.NullString{NullString: sql.NullString{String: privateIP, Valid: true}}
 	}
-	log.Printf("[DEBUG] provision_vps: vps %d IPs retrieved public_ip=%s private_ip=%s", vpsID, publicIP, privateIP)
+	s.log.Debug("provision_vps_ips_retrieved", "vps_id", vpsID, "public_ip", publicIP, "private_ip", privateIP)
 
 	if privateKeyPEM != "" {
 		emit("setting_up_ssh", "provisioning", "Creating SSH user")
 		sshUser := sanitizeUsername(vps.DisplayName)
 		sshPass := generatePassword(16)
-		log.Printf("[DEBUG] provision_vps: vps %d creating SSH user %q on %s", vpsID, sshUser, publicIP)
+		s.log.Debug("provision_vps_creating_ssh_user", "vps_id", vpsID, "ssh_user", sshUser, "host", publicIP)
 
 		var sshErr error
 		for attempt := 1; attempt <= 20; attempt++ {
@@ -402,7 +419,7 @@ func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) err
 				emit("ssh_connected", "provisioning", "SSH user created successfully")
 				break
 			}
-			log.Printf("[DEBUG] provision_vps: vps %d SSH attempt %d/20 failed: %v", vpsID, attempt, sshErr)
+			s.log.Debug("provision_vps_ssh_attempt_failed", "vps_id", vpsID, "attempt", attempt, "error", sshErr)
 			if attempt < 20 {
 				emit("ssh_retry", "provisioning", fmt.Sprintf("Waiting for SSH daemon (attempt %d/20)", attempt))
 				time.Sleep(10 * time.Second)
@@ -412,7 +429,7 @@ func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) err
 		}
 
 		if sshErr != nil {
-			log.Printf("[ERROR] provision_vps: vps %d SSH user creation failed after 20 attempts: %v", vpsID, sshErr)
+			s.log.Error("provision_vps_ssh_user_creation_failed", "vps_id", vpsID, "error", sshErr)
 			emit("error", "failed", "SSH user creation failed after 20 attempts")
 			s.RollbackVPS(ctx, vpsID, network.Region, instanceID)
 			return fmt.Errorf("ssh create user: %w", sshErr)
@@ -421,12 +438,12 @@ func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) err
 		vps.SSHPrivateKey = model.NullString{NullString: sql.NullString{String: privateKeyPEM, Valid: true}}
 		vps.SSHUsername = model.NullString{NullString: sql.NullString{String: sshUser, Valid: true}}
 		vps.SSHPassword = model.NullString{NullString: sql.NullString{String: sshPass, Valid: true}}
-		log.Printf("[DEBUG] provision_vps: vps %d SSH credentials saved user=%s", vpsID, sshUser)
+		s.log.Debug("provision_vps_ssh_credentials_saved", "vps_id", vpsID, "ssh_user", sshUser)
 
 		if verifyErr := sshVerifyPasswordLoginFn(ctx, s.vpsRepo, vpsID, publicIP, sshUser, sshPass); verifyErr != nil {
-			log.Printf("[DEBUG] provision_vps: vps %d password login VERIFICATION FAILED: %v", vpsID, verifyErr)
+			s.log.Debug("provision_vps_password_verify_failed", "vps_id", vpsID, "error", verifyErr)
 		} else {
-			log.Printf("[DEBUG] provision_vps: vps %d password login verified OK for user=%s", vpsID, sshUser)
+			s.log.Debug("provision_vps_password_verified", "vps_id", vpsID, "ssh_user", sshUser)
 		}
 	}
 
@@ -445,7 +462,7 @@ func (s *VPSProvisionService) ProvisionVPS(ctx context.Context, vpsID int64) err
 		eventData["private_ip"] = vps.PrivateIP.String
 	}
 
-	log.Printf("[DEBUG] provision_vps: vps %d provisioning complete, publishing ready event", vpsID)
+	s.log.Debug("provision_vps_complete", "vps_id", vpsID)
 	s.broker.Publish(channel, sse.SSEEvent{
 		Type:    "status",
 		Status:  "running",
@@ -519,7 +536,17 @@ func (s *VPSProvisionService) VPSRegionForDelete(ctx context.Context, vpsID int6
 	return s.vpsRegion(ctx, vpsID)
 }
 
-func (s *VPSProvisionService) TerminateInstance(ctx context.Context, vpsID int64, region, instanceID string) error {
+func (s *VPSProvisionService) TerminateInstance(ctx context.Context, vpsID int64, region, instanceID string) (err error) {
+	defer func() {
+		status := "success"
+		errMsg := ""
+		if err != nil {
+			status = "failure"
+			errMsg = sanitize(err.Error())
+		}
+		s.audit.Log(ctx, model.AuditLog{Operation: "vps.terminate", ResourceType: "vps", ResourceID: vpsID, Status: status, ErrorMessage: errMsg})
+	}()
+
 	if err := s.computeService.TerminateInstance(ctx, region, instanceID); err != nil {
 		_ = s.vpsRepo.UpdateStatus(ctx, vpsID, "running")
 		channel := fmt.Sprintf("vps:%d", vpsID)
@@ -534,7 +561,7 @@ func (s *VPSProvisionService) TerminateInstance(ctx context.Context, vpsID int64
 	vps, verr := s.vpsRepo.Get(ctx, vpsID)
 	if verr == nil && vps.NSGID != "" {
 		if derr := s.computeService.DeleteNSG(ctx, region, vps.NSGID); derr != nil {
-			log.Printf("[WARN] terminate_instance: vps %d delete NSG %s failed: %v", vpsID, vps.NSGID, derr)
+			s.log.Warn("terminate_instance_delete_nsg_failed", "vps_id", vpsID, "nsg_id", vps.NSGID, "error", derr)
 		} else {
 			_ = s.vpsResourceRepo.MarkDeleted(ctx, vps.NSGID)
 			_ = s.vpsRepo.UpdateNSGID(ctx, vpsID, "")
@@ -542,10 +569,10 @@ func (s *VPSProvisionService) TerminateInstance(ctx context.Context, vpsID int64
 	}
 
 	if err := s.vpsRepo.UpdateStatus(ctx, vpsID, "terminated"); err != nil {
-		log.Printf("[WARN] terminate_instance: vps %d update status to terminated failed: %v", vpsID, err)
+		s.log.Warn("terminate_instance_update_status_failed", "vps_id", vpsID, "error", err)
 	}
 	if err := s.vpsRepo.UpdateProvisioningState(ctx, vpsID, string(StateVPSFailed)); err != nil {
-		log.Printf("[WARN] terminate_instance: vps %d update provisioning state failed: %v", vpsID, err)
+		s.log.Warn("terminate_instance_update_provisioning_state_failed", "vps_id", vpsID, "error", err)
 	}
 
 	channel := fmt.Sprintf("vps:%d", vpsID)
@@ -560,37 +587,39 @@ func (s *VPSProvisionService) TerminateInstance(ctx context.Context, vpsID int64
 }
 
 func (s *VPSProvisionService) RollbackVPS(ctx context.Context, vpsID int64, region, instanceID string) {
-	log.Printf("[WARN] rollback_vps: vps %d starting rollback instance=%s", vpsID, instanceID)
+	s.audit.Log(ctx, model.AuditLog{Operation: "vps.rollback", ResourceType: "vps", ResourceID: vpsID, Status: "started"})
+
+	s.log.Warn("rollback_vps_starting", "vps_id", vpsID, "instance_id", instanceID)
 	channel := fmt.Sprintf("vps:%d", vpsID)
 	if err := s.vpsRepo.UpdateProvisioningState(ctx, vpsID, string(StateVPSRollingBack)); err != nil {
-		log.Printf("[WARN] rollback_vps: vps %d update provisioning state failed: %v", vpsID, err)
+		s.log.Warn("rollback_vps_update_state_failed", "vps_id", vpsID, "error", err)
 	}
 	if instanceID != "" {
 		if terr := s.TerminateInstance(ctx, vpsID, region, instanceID); terr != nil {
-			log.Printf("[ERROR] rollback_vps: vps %d terminate instance failed: %v", vpsID, terr)
+			s.log.Error("rollback_vps_terminate_failed", "vps_id", vpsID, "error", terr)
 		}
 		if merr := s.vpsResourceRepo.MarkDeleted(ctx, instanceID); merr != nil {
-			log.Printf("[WARN] rollback_vps: vps %d mark resource deleted failed: %v", vpsID, merr)
+			s.log.Warn("rollback_vps_mark_deleted_failed", "vps_id", vpsID, "error", merr)
 		}
 	}
 	{
 		vps, verr := s.vpsRepo.Get(ctx, vpsID)
 		if verr == nil && vps.NSGID != "" {
 			if derr := s.computeService.DeleteNSG(ctx, region, vps.NSGID); derr != nil {
-				log.Printf("[ERROR] rollback_vps: vps %d delete NSG %s failed: %v", vpsID, vps.NSGID, derr)
+				s.log.Error("rollback_vps_delete_nsg_failed", "vps_id", vpsID, "nsg_id", vps.NSGID, "error", derr)
 			} else {
 				if merr := s.vpsResourceRepo.MarkDeleted(ctx, vps.NSGID); merr != nil {
-					log.Printf("[WARN] rollback_vps: vps %d mark NSG deleted failed: %v", vpsID, merr)
+					s.log.Warn("rollback_vps_mark_nsg_deleted_failed", "vps_id", vpsID, "error", merr)
 				}
 				_ = s.vpsRepo.UpdateNSGID(ctx, vpsID, "")
 			}
 		}
 	}
 	if err := s.vpsRepo.UpdateStatus(ctx, vpsID, "failed"); err != nil {
-		log.Printf("[ERROR] rollback_vps: vps %d update status failed: %v", vpsID, err)
+		s.log.Error("rollback_vps_update_status_failed", "vps_id", vpsID, "error", err)
 	}
 	if err := s.vpsRepo.UpdateProvisioningState(ctx, vpsID, string(StateVPSFailed)); err != nil {
-		log.Printf("[ERROR] rollback_vps: vps %d update provisioning state failed: %v", vpsID, err)
+		s.log.Error("rollback_vps_update_prov_state_failed", "vps_id", vpsID, "error", err)
 	}
 	s.broker.Publish(channel, sse.SSEEvent{
 		Type:    "error",
@@ -600,40 +629,50 @@ func (s *VPSProvisionService) RollbackVPS(ctx context.Context, vpsID int64, regi
 	})
 }
 
-func (s *VPSProvisionService) StartInstance(ctx context.Context, vpsID int64) error {
-	log.Printf("[DEBUG] service_start_instance: vps_id=%d", vpsID)
+func (s *VPSProvisionService) StartInstance(ctx context.Context, vpsID int64) (err error) {
+	defer func() {
+		status := "success"
+		errMsg := ""
+		if err != nil {
+			status = "failure"
+			errMsg = sanitize(err.Error())
+		}
+		s.audit.Log(ctx, model.AuditLog{Operation: "vps.start", ResourceType: "vps", ResourceID: vpsID, Status: status, ErrorMessage: errMsg})
+	}()
+
+	s.log.Debug("start_instance_begin", "vps_id", vpsID)
 
 	vps, err := s.vpsRepo.Get(ctx, vpsID)
 	if err != nil {
-		log.Printf("[DEBUG] service_start_instance: vps %d get failed: %v", vpsID, err)
+		s.log.Debug("start_instance_get_failed", "vps_id", vpsID, "error", err)
 		return fmt.Errorf("get vps: %w", err)
 	}
 	if vps == nil {
-		log.Printf("[DEBUG] service_start_instance: vps %d not found", vpsID)
+		s.log.Debug("start_instance_not_found", "vps_id", vpsID)
 		return fmt.Errorf("vps %d not found", vpsID)
 	}
 
 	if !vps.OCIInstanceID.Valid || vps.OCIInstanceID.String == "" {
-		log.Printf("[DEBUG] service_start_instance: vps %d has no OCI instance ID", vpsID)
+		s.log.Debug("start_instance_no_instance_id", "vps_id", vpsID)
 		return fmt.Errorf("vps has no OCI instance ID")
 	}
 
 	if vps.Status != "stopped" {
-		log.Printf("[DEBUG] service_start_instance: vps %d not in stopped state (current=%s)", vpsID, vps.Status)
+		s.log.Debug("start_instance_wrong_state", "vps_id", vpsID, "current_status", vps.Status)
 		return fmt.Errorf("vps must be in stopped state to start, current: %s", vps.Status)
 	}
 
 	region, err := s.vpsRegion(ctx, vpsID)
 	if err != nil {
-		log.Printf("[DEBUG] service_start_instance: vps %d get region failed: %v", vpsID, err)
+		s.log.Debug("start_instance_get_region_failed", "vps_id", vpsID, "error", err)
 		return err
 	}
 
-	log.Printf("[DEBUG] service_start_instance: vps %d region=%s instance_id=%s", vpsID, region, vps.OCIInstanceID.String)
+	s.log.Debug("start_instance_region", "vps_id", vpsID, "region", region, "instance_id", vps.OCIInstanceID.String)
 
 	computeClient, err := s.computeService.GetComputeClient(ctx, region)
 	if err != nil {
-		log.Printf("[DEBUG] service_start_instance: vps %d get compute client failed: %v", vpsID, err)
+		s.log.Debug("start_instance_get_client_failed", "vps_id", vpsID, "error", err)
 		return fmt.Errorf("get compute client: %w", err)
 	}
 
@@ -643,16 +682,16 @@ func (s *VPSProvisionService) StartInstance(ctx context.Context, vpsID int64) er
 		Action:     action,
 	})
 	if err != nil {
-		log.Printf("[DEBUG] service_start_instance: vps %d instance action START failed: %v", vpsID, err)
+		s.log.Debug("start_instance_action_failed", "vps_id", vpsID, "error", err)
 		return fmt.Errorf("instance action start: %w", err)
 	}
 
 	if err := s.vpsRepo.UpdateStatus(ctx, vpsID, "running"); err != nil {
-		log.Printf("[DEBUG] service_start_instance: vps %d update status failed: %v", vpsID, err)
+		s.log.Debug("start_instance_update_status_failed", "vps_id", vpsID, "error", err)
 		return fmt.Errorf("update vps status: %w", err)
 	}
 
-	log.Printf("[DEBUG] service_start_instance: vps %d started successfully", vpsID)
+	s.log.Debug("start_instance_success", "vps_id", vpsID)
 
 	s.broker.Publish(fmt.Sprintf("vps:%d", vpsID), sse.SSEEvent{
 		Type:    "status",
@@ -664,40 +703,50 @@ func (s *VPSProvisionService) StartInstance(ctx context.Context, vpsID int64) er
 	return nil
 }
 
-func (s *VPSProvisionService) StopInstance(ctx context.Context, vpsID int64) error {
-	log.Printf("[DEBUG] service_stop_instance: vps_id=%d", vpsID)
+func (s *VPSProvisionService) StopInstance(ctx context.Context, vpsID int64) (err error) {
+	defer func() {
+		status := "success"
+		errMsg := ""
+		if err != nil {
+			status = "failure"
+			errMsg = sanitize(err.Error())
+		}
+		s.audit.Log(ctx, model.AuditLog{Operation: "vps.stop", ResourceType: "vps", ResourceID: vpsID, Status: status, ErrorMessage: errMsg})
+	}()
+
+	s.log.Debug("stop_instance_begin", "vps_id", vpsID)
 
 	vps, err := s.vpsRepo.Get(ctx, vpsID)
 	if err != nil {
-		log.Printf("[DEBUG] service_stop_instance: vps %d get failed: %v", vpsID, err)
+		s.log.Debug("stop_instance_get_failed", "vps_id", vpsID, "error", err)
 		return fmt.Errorf("get vps: %w", err)
 	}
 	if vps == nil {
-		log.Printf("[DEBUG] service_stop_instance: vps %d not found", vpsID)
+		s.log.Debug("stop_instance_not_found", "vps_id", vpsID)
 		return fmt.Errorf("vps %d not found", vpsID)
 	}
 
 	if !vps.OCIInstanceID.Valid || vps.OCIInstanceID.String == "" {
-		log.Printf("[DEBUG] service_stop_instance: vps %d has no OCI instance ID", vpsID)
+		s.log.Debug("stop_instance_no_instance_id", "vps_id", vpsID)
 		return fmt.Errorf("vps has no OCI instance ID")
 	}
 
 	if vps.Status != "running" {
-		log.Printf("[DEBUG] service_stop_instance: vps %d not in running state (current=%s)", vpsID, vps.Status)
+		s.log.Debug("stop_instance_wrong_state", "vps_id", vpsID, "current_status", vps.Status)
 		return fmt.Errorf("vps must be in running state to stop, current: %s", vps.Status)
 	}
 
 	region, err := s.vpsRegion(ctx, vpsID)
 	if err != nil {
-		log.Printf("[DEBUG] service_stop_instance: vps %d get region failed: %v", vpsID, err)
+		s.log.Debug("stop_instance_get_region_failed", "vps_id", vpsID, "error", err)
 		return err
 	}
 
-	log.Printf("[DEBUG] service_stop_instance: vps %d region=%s instance_id=%s", vpsID, region, vps.OCIInstanceID.String)
+	s.log.Debug("stop_instance_region", "vps_id", vpsID, "region", region, "instance_id", vps.OCIInstanceID.String)
 
 	computeClient, err := s.computeService.GetComputeClient(ctx, region)
 	if err != nil {
-		log.Printf("[DEBUG] service_stop_instance: vps %d get compute client failed: %v", vpsID, err)
+		s.log.Debug("stop_instance_get_client_failed", "vps_id", vpsID, "error", err)
 		return fmt.Errorf("get compute client: %w", err)
 	}
 
@@ -707,16 +756,16 @@ func (s *VPSProvisionService) StopInstance(ctx context.Context, vpsID int64) err
 		Action:     action,
 	})
 	if err != nil {
-		log.Printf("[DEBUG] service_stop_instance: vps %d instance action STOP failed: %v", vpsID, err)
+		s.log.Debug("stop_instance_action_failed", "vps_id", vpsID, "error", err)
 		return fmt.Errorf("instance action stop: %w", err)
 	}
 
 	if err := s.vpsRepo.UpdateStatus(ctx, vpsID, "stopped"); err != nil {
-		log.Printf("[DEBUG] service_stop_instance: vps %d update status failed: %v", vpsID, err)
+		s.log.Debug("stop_instance_update_status_failed", "vps_id", vpsID, "error", err)
 		return fmt.Errorf("update vps status: %w", err)
 	}
 
-	log.Printf("[DEBUG] service_stop_instance: vps %d stopped successfully", vpsID)
+	s.log.Debug("stop_instance_success", "vps_id", vpsID)
 
 	s.broker.Publish(fmt.Sprintf("vps:%d", vpsID), sse.SSEEvent{
 		Type:    "status",
@@ -728,40 +777,50 @@ func (s *VPSProvisionService) StopInstance(ctx context.Context, vpsID int64) err
 	return nil
 }
 
-func (s *VPSProvisionService) RestartInstance(ctx context.Context, vpsID int64) error {
-	log.Printf("[DEBUG] service_restart_instance: vps_id=%d", vpsID)
+func (s *VPSProvisionService) RestartInstance(ctx context.Context, vpsID int64) (err error) {
+	defer func() {
+		status := "success"
+		errMsg := ""
+		if err != nil {
+			status = "failure"
+			errMsg = sanitize(err.Error())
+		}
+		s.audit.Log(ctx, model.AuditLog{Operation: "vps.restart", ResourceType: "vps", ResourceID: vpsID, Status: status, ErrorMessage: errMsg})
+	}()
+
+	s.log.Debug("restart_instance_begin", "vps_id", vpsID)
 
 	vps, err := s.vpsRepo.Get(ctx, vpsID)
 	if err != nil {
-		log.Printf("[DEBUG] service_restart_instance: vps %d get failed: %v", vpsID, err)
+		s.log.Debug("restart_instance_get_failed", "vps_id", vpsID, "error", err)
 		return fmt.Errorf("get vps: %w", err)
 	}
 	if vps == nil {
-		log.Printf("[DEBUG] service_restart_instance: vps %d not found", vpsID)
+		s.log.Debug("restart_instance_not_found", "vps_id", vpsID)
 		return fmt.Errorf("vps %d not found", vpsID)
 	}
 
 	if !vps.OCIInstanceID.Valid || vps.OCIInstanceID.String == "" {
-		log.Printf("[DEBUG] service_restart_instance: vps %d has no OCI instance ID", vpsID)
+		s.log.Debug("restart_instance_no_instance_id", "vps_id", vpsID)
 		return fmt.Errorf("vps has no OCI instance ID")
 	}
 
 	if vps.Status != "running" {
-		log.Printf("[DEBUG] service_restart_instance: vps %d not in running state (current=%s)", vpsID, vps.Status)
+		s.log.Debug("restart_instance_wrong_state", "vps_id", vpsID, "current_status", vps.Status)
 		return fmt.Errorf("vps must be in running state to restart, current: %s", vps.Status)
 	}
 
 	region, err := s.vpsRegion(ctx, vpsID)
 	if err != nil {
-		log.Printf("[DEBUG] service_restart_instance: vps %d get region failed: %v", vpsID, err)
+		s.log.Debug("restart_instance_get_region_failed", "vps_id", vpsID, "error", err)
 		return err
 	}
 
-	log.Printf("[DEBUG] service_restart_instance: vps %d region=%s instance_id=%s", vpsID, region, vps.OCIInstanceID.String)
+	s.log.Debug("restart_instance_region", "vps_id", vpsID, "region", region, "instance_id", vps.OCIInstanceID.String)
 
 	computeClient, err := s.computeService.GetComputeClient(ctx, region)
 	if err != nil {
-		log.Printf("[DEBUG] service_restart_instance: vps %d get compute client failed: %v", vpsID, err)
+		s.log.Debug("restart_instance_get_client_failed", "vps_id", vpsID, "error", err)
 		return fmt.Errorf("get compute client: %w", err)
 	}
 
@@ -771,11 +830,11 @@ func (s *VPSProvisionService) RestartInstance(ctx context.Context, vpsID int64) 
 		Action:     action,
 	})
 	if err != nil {
-		log.Printf("[DEBUG] service_restart_instance: vps %d instance action SOFTRESET failed: %v", vpsID, err)
+		s.log.Debug("restart_instance_action_failed", "vps_id", vpsID, "error", err)
 		return fmt.Errorf("instance action restart: %w", err)
 	}
 
-	log.Printf("[DEBUG] service_restart_instance: vps %d restarted successfully", vpsID)
+	s.log.Debug("restart_instance_success", "vps_id", vpsID)
 
 	s.broker.Publish(fmt.Sprintf("vps:%d", vpsID), sse.SSEEvent{
 		Type:    "status",
@@ -787,40 +846,50 @@ func (s *VPSProvisionService) RestartInstance(ctx context.Context, vpsID int64) 
 	return nil
 }
 
-func (s *VPSProvisionService) ResetInstance(ctx context.Context, vpsID int64) error {
-	log.Printf("[DEBUG] service_reset_instance: vps_id=%d", vpsID)
+func (s *VPSProvisionService) ResetInstance(ctx context.Context, vpsID int64) (err error) {
+	defer func() {
+		status := "success"
+		errMsg := ""
+		if err != nil {
+			status = "failure"
+			errMsg = sanitize(err.Error())
+		}
+		s.audit.Log(ctx, model.AuditLog{Operation: "vps.reset", ResourceType: "vps", ResourceID: vpsID, Status: status, ErrorMessage: errMsg})
+	}()
+
+	s.log.Debug("reset_instance_begin", "vps_id", vpsID)
 
 	vps, err := s.vpsRepo.Get(ctx, vpsID)
 	if err != nil {
-		log.Printf("[DEBUG] service_reset_instance: vps %d get failed: %v", vpsID, err)
+		s.log.Debug("reset_instance_get_failed", "vps_id", vpsID, "error", err)
 		return fmt.Errorf("get vps: %w", err)
 	}
 	if vps == nil {
-		log.Printf("[DEBUG] service_reset_instance: vps %d not found", vpsID)
+		s.log.Debug("reset_instance_not_found", "vps_id", vpsID)
 		return fmt.Errorf("vps %d not found", vpsID)
 	}
 
 	if !vps.OCIInstanceID.Valid || vps.OCIInstanceID.String == "" {
-		log.Printf("[DEBUG] service_reset_instance: vps %d has no OCI instance ID", vpsID)
+		s.log.Debug("reset_instance_no_instance_id", "vps_id", vpsID)
 		return fmt.Errorf("vps has no OCI instance ID")
 	}
 
 	if vps.Status != "running" && vps.Status != "stopped" {
-		log.Printf("[DEBUG] service_reset_instance: vps %d not in running/stopped state (current=%s)", vpsID, vps.Status)
+		s.log.Debug("reset_instance_wrong_state", "vps_id", vpsID, "current_status", vps.Status)
 		return fmt.Errorf("vps must be in running or stopped state to reset, current: %s", vps.Status)
 	}
 
 	region, err := s.vpsRegion(ctx, vpsID)
 	if err != nil {
-		log.Printf("[DEBUG] service_reset_instance: vps %d get region failed: %v", vpsID, err)
+		s.log.Debug("reset_instance_get_region_failed", "vps_id", vpsID, "error", err)
 		return err
 	}
 
-	log.Printf("[DEBUG] service_reset_instance: vps %d region=%s instance_id=%s", vpsID, region, vps.OCIInstanceID.String)
+	s.log.Debug("reset_instance_region", "vps_id", vpsID, "region", region, "instance_id", vps.OCIInstanceID.String)
 
 	computeClient, err := s.computeService.GetComputeClient(ctx, region)
 	if err != nil {
-		log.Printf("[DEBUG] service_reset_instance: vps %d get compute client failed: %v", vpsID, err)
+		s.log.Debug("reset_instance_get_client_failed", "vps_id", vpsID, "error", err)
 		return fmt.Errorf("get compute client: %w", err)
 	}
 
@@ -830,11 +899,11 @@ func (s *VPSProvisionService) ResetInstance(ctx context.Context, vpsID int64) er
 		Action:     action,
 	})
 	if err != nil {
-		log.Printf("[DEBUG] service_reset_instance: vps %d instance action RESET failed: %v", vpsID, err)
+		s.log.Debug("reset_instance_action_failed", "vps_id", vpsID, "error", err)
 		return fmt.Errorf("instance action reset: %w", err)
 	}
 
-	log.Printf("[DEBUG] service_reset_instance: vps %d reset successfully", vpsID)
+	s.log.Debug("reset_instance_success", "vps_id", vpsID)
 
 	s.broker.Publish(fmt.Sprintf("vps:%d", vpsID), sse.SSEEvent{
 		Type:    "status",
@@ -846,7 +915,17 @@ func (s *VPSProvisionService) ResetInstance(ctx context.Context, vpsID int64) er
 	return nil
 }
 
-func (s *VPSProvisionService) ResetPassword(ctx context.Context, vpsID int64, newPassword string) error {
+func (s *VPSProvisionService) ResetPassword(ctx context.Context, vpsID int64, newPassword string) (err error) {
+	defer func() {
+		status := "success"
+		errMsg := ""
+		if err != nil {
+			status = "failure"
+			errMsg = sanitize(err.Error())
+		}
+		s.audit.Log(ctx, model.AuditLog{Operation: "vps.reset_password", ResourceType: "vps", ResourceID: vpsID, Status: status, ErrorMessage: errMsg})
+	}()
+
 	if err := ValidateResetPassword(newPassword); err != nil {
 		return err
 	}
@@ -880,7 +959,7 @@ func (s *VPSProvisionService) ResetPassword(ctx context.Context, vpsID int64, ne
 		return fmt.Errorf("vps has no SSH private key")
 	}
 
-	log.Printf("[DEBUG] reset_password: vps %d resetting password for user %q via SSH", vpsID, vps.SSHUsername.String)
+	s.log.Debug("reset_password_begin", "vps_id", vpsID, "ssh_user", vps.SSHUsername.String)
 
 	if err := sshResetPasswordFn(ctx, s.vpsRepo, vpsID, vps.PublicIP.String, vps.SSHPrivateKey.String, vps.SSHUsername.String, newPassword); err != nil {
 		return fmt.Errorf("ssh reset password: %w", err)
@@ -965,47 +1044,47 @@ type FirewallRule struct {
 }
 
 func (s *VPSProvisionService) GetFirewallRules(ctx context.Context, vpsID int64) ([]FirewallRule, error) {
-	log.Printf("[DEBUG] service_get_firewall: vps_id=%d", vpsID)
+	s.log.Debug("get_firewall_begin", "vps_id", vpsID)
 
 	vps, err := s.vpsRepo.Get(ctx, vpsID)
 	if err != nil {
-		log.Printf("[DEBUG] service_get_firewall: vps %d get failed: %v", vpsID, err)
+		s.log.Debug("get_firewall_get_vps_failed", "vps_id", vpsID, "error", err)
 		return nil, fmt.Errorf("get vps: %w", err)
 	}
 	if vps == nil {
-		log.Printf("[DEBUG] service_get_firewall: vps %d not found", vpsID)
+		s.log.Debug("get_firewall_vps_not_found", "vps_id", vpsID)
 		return nil, fmt.Errorf("vps %d not found", vpsID)
 	}
 
 	if vps.NSGID == "" {
-		log.Printf("[DEBUG] service_get_firewall: vps %d has no NSG assigned", vpsID)
+		s.log.Debug("get_firewall_no_nsg", "vps_id", vpsID)
 		return nil, fmt.Errorf("no NSG associated with VPS %d", vpsID)
 	}
 
 	if !vps.NetworkID.Valid {
-		log.Printf("[DEBUG] service_get_firewall: vps %d has no network assigned", vpsID)
+		s.log.Debug("get_firewall_no_network", "vps_id", vpsID)
 		return nil, fmt.Errorf("vps has no network assigned")
 	}
 
 	network, err := s.networkRepo.Get(ctx, vps.NetworkID.Int64)
 	if err != nil {
-		log.Printf("[DEBUG] service_get_firewall: vps %d get network %d failed: %v", vpsID, vps.NetworkID.Int64, err)
+		s.log.Debug("get_firewall_get_network_failed", "vps_id", vpsID, "network_id", vps.NetworkID.Int64, "error", err)
 		return nil, fmt.Errorf("get network: %w", err)
 	}
 	if network == nil {
-		log.Printf("[DEBUG] service_get_firewall: vps %d network %d not found", vpsID, vps.NetworkID.Int64)
+		s.log.Debug("get_firewall_network_not_found", "vps_id", vpsID, "network_id", vps.NetworkID.Int64)
 		return nil, fmt.Errorf("network not found")
 	}
 
-	log.Printf("[DEBUG] service_get_firewall: vps %d nsg_id=%s region=%s", vpsID, vps.NSGID, network.Region)
+	s.log.Debug("get_firewall_nsg_region", "vps_id", vpsID, "nsg_id", vps.NSGID, "region", network.Region)
 
 	nsgRules, err := s.computeService.ListNSGRules(ctx, network.Region, vps.NSGID)
 	if err != nil {
-		log.Printf("[DEBUG] service_get_firewall: vps %d ListNSGRules failed: %v", vpsID, err)
+		s.log.Debug("get_firewall_list_rules_failed", "vps_id", vpsID, "error", err)
 		return nil, fmt.Errorf("list NSG rules: %w", err)
 	}
 
-	log.Printf("[DEBUG] service_get_firewall: vps %d NSG has %d rules", vpsID, len(nsgRules))
+	s.log.Debug("get_firewall_rules_count", "vps_id", vpsID, "count", len(nsgRules))
 
 	var rules []FirewallRule
 	for _, r := range nsgRules {
@@ -1041,44 +1120,44 @@ func (s *VPSProvisionService) GetFirewallRules(ctx context.Context, vpsID int64)
 }
 
 func (s *VPSProvisionService) UpdateFirewallRules(ctx context.Context, vpsID int64, rules []FirewallRule) error {
-	log.Printf("[DEBUG] service_update_firewall: vps_id=%d rules_count=%d", vpsID, len(rules))
+	s.log.Debug("update_firewall_begin", "vps_id", vpsID, "rules_count", len(rules))
 
 	vps, err := s.vpsRepo.Get(ctx, vpsID)
 	if err != nil {
-		log.Printf("[DEBUG] service_update_firewall: vps %d get failed: %v", vpsID, err)
+		s.log.Debug("update_firewall_get_vps_failed", "vps_id", vpsID, "error", err)
 		return fmt.Errorf("get vps: %w", err)
 	}
 	if vps == nil {
-		log.Printf("[DEBUG] service_update_firewall: vps %d not found", vpsID)
+		s.log.Debug("update_firewall_vps_not_found", "vps_id", vpsID)
 		return fmt.Errorf("vps %d not found", vpsID)
 	}
 
 	if vps.NSGID == "" {
-		log.Printf("[DEBUG] service_update_firewall: vps %d has no NSG assigned", vpsID)
+		s.log.Debug("update_firewall_no_nsg", "vps_id", vpsID)
 		return fmt.Errorf("no NSG associated with VPS %d", vpsID)
 	}
 
 	if !vps.NetworkID.Valid {
-		log.Printf("[DEBUG] service_update_firewall: vps %d has no network assigned", vpsID)
+		s.log.Debug("update_firewall_no_network", "vps_id", vpsID)
 		return fmt.Errorf("vps has no network assigned")
 	}
 
 	network, err := s.networkRepo.Get(ctx, vps.NetworkID.Int64)
 	if err != nil {
-		log.Printf("[DEBUG] service_update_firewall: vps %d get network %d failed: %v", vpsID, vps.NetworkID.Int64, err)
+		s.log.Debug("update_firewall_get_network_failed", "vps_id", vpsID, "network_id", vps.NetworkID.Int64, "error", err)
 		return fmt.Errorf("get network: %w", err)
 	}
 	if network == nil {
-		log.Printf("[DEBUG] service_update_firewall: vps %d network %d not found", vpsID, vps.NetworkID.Int64)
+		s.log.Debug("update_firewall_network_not_found", "vps_id", vpsID, "network_id", vps.NetworkID.Int64)
 		return fmt.Errorf("network not found")
 	}
 
-	log.Printf("[DEBUG] service_update_firewall: vps %d nsg_id=%s region=%s", vpsID, vps.NSGID, network.Region)
+	s.log.Debug("update_firewall_nsg_region", "vps_id", vpsID, "nsg_id", vps.NSGID, "region", network.Region)
 
 	// 1. List current NSG rules to get their IDs for removal
 	currentRules, err := s.computeService.ListNSGRules(ctx, network.Region, vps.NSGID)
 	if err != nil {
-		log.Printf("[DEBUG] service_update_firewall: vps %d ListNSGRules failed: %v", vpsID, err)
+		s.log.Debug("update_firewall_list_rules_failed", "vps_id", vpsID, "error", err)
 		return fmt.Errorf("list current NSG rules: %w", err)
 	}
 
@@ -1090,13 +1169,13 @@ func (s *VPSProvisionService) UpdateFirewallRules(ctx context.Context, vpsID int
 		}
 	}
 	if err := s.computeService.RemoveNSGRules(ctx, network.Region, vps.NSGID, currentIDs); err != nil {
-		log.Printf("[DEBUG] service_update_firewall: vps %d RemoveNSGRules failed: %v", vpsID, err)
+		s.log.Debug("update_firewall_remove_rules_failed", "vps_id", vpsID, "error", err)
 		return fmt.Errorf("remove current NSG rules: %w", err)
 	}
 
 	// 3. Convert FirewallRules → AddSecurityRuleDetails and add them
 	if len(rules) == 0 {
-		log.Printf("[DEBUG] service_update_firewall: vps %d no rules to add, firewall cleared", vpsID)
+		s.log.Debug("update_firewall_cleared", "vps_id", vpsID)
 		return nil
 	}
 
@@ -1150,11 +1229,11 @@ func (s *VPSProvisionService) UpdateFirewallRules(ctx context.Context, vpsID int
 	}
 
 	if err := s.computeService.AddNSGRules(ctx, network.Region, vps.NSGID, details); err != nil {
-		log.Printf("[DEBUG] service_update_firewall: vps %d AddNSGRules failed: %v", vpsID, err)
+		s.log.Debug("update_firewall_add_rules_failed", "vps_id", vpsID, "error", err)
 		return fmt.Errorf("add new NSG rules: %w", err)
 	}
 
-	log.Printf("[DEBUG] service_update_firewall: vps %d NSG rules updated successfully", vpsID)
+	s.log.Debug("update_firewall_success", "vps_id", vpsID)
 	return nil
 }
 
@@ -1188,4 +1267,11 @@ func generatePassword(length int) string {
 		b[i] = passwordChars[n.Int64()]
 	}
 	return string(b)
+}
+
+func sanitize(errMsg string) string {
+	if len(errMsg) > 256 {
+		return errMsg[:256]
+	}
+	return errMsg
 }

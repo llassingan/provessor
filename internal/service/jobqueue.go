@@ -5,9 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"sync"
 	"time"
+
+	"github.com/llassingan/provessor/internal/logger"
+	"github.com/llassingan/provessor/internal/model"
+	"github.com/llassingan/provessor/internal/repository"
 )
 
 // Job types (string constants)
@@ -36,6 +39,8 @@ type JobQueue struct {
 	db                  *sql.DB
 	networkService      *NetworkService
 	vpsProvisionService *VPSProvisionService
+	log                 *logger.Logger
+	audit               *repository.AuditLogRepository
 	wg                  sync.WaitGroup
 	stopCh              chan struct{}
 }
@@ -44,11 +49,15 @@ func NewJobQueue(
 	db *sql.DB,
 	networkService *NetworkService,
 	vpsProvisionService *VPSProvisionService,
+	log *logger.Logger,
+	audit *repository.AuditLogRepository,
 ) *JobQueue {
 	return &JobQueue{
 		db:                  db,
 		networkService:      networkService,
 		vpsProvisionService: vpsProvisionService,
+		log:                 log,
+		audit:               audit,
 		stopCh:              make(chan struct{}),
 	}
 }
@@ -82,9 +91,9 @@ func (q *JobQueue) Stop() {
 	}()
 	select {
 	case <-done:
-		log.Printf("[INFO] jobqueue: all in-flight jobs completed on shutdown")
+		q.log.Info("jobqueue_shutdown_complete")
 	case <-time.After(60 * time.Second):
-		log.Printf("[WARN] jobqueue: shutdown timeout — some jobs still running")
+		q.log.Warn("jobqueue_shutdown_timeout")
 	}
 }
 
@@ -98,7 +107,7 @@ func (q *JobQueue) ResumeOnStartup(ctx context.Context) error {
 	}
 	n, _ := result.RowsAffected()
 	if n > 0 {
-		log.Printf("[INFO] jobqueue: reset %d interrupted jobs to pending", n)
+		q.log.Info("jobqueue_reset_interrupted_jobs", "count", n)
 	}
 	return nil
 }
@@ -108,7 +117,7 @@ func (q *JobQueue) workerLoop(ctx context.Context) {
 	defer q.wg.Done()
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[ERROR] jobqueue: worker panic: %v", r)
+			q.log.Error("jobqueue_worker_panic", "error", fmt.Errorf("%v", r))
 		}
 	}()
 	ticker := time.NewTicker(2 * time.Second)
@@ -116,14 +125,14 @@ func (q *JobQueue) workerLoop(ctx context.Context) {
 	for {
 		select {
 		case <-q.stopCh:
-			log.Printf("[INFO] jobqueue: worker loop exiting on stop signal")
+			q.log.Info("jobqueue_worker_stop_signal")
 			return
 		case <-ctx.Done():
-			log.Printf("[INFO] jobqueue: worker loop exiting on ctx done")
+			q.log.Info("jobqueue_worker_ctx_done")
 			return
 		case <-ticker.C:
 			if err := q.processOneJob(ctx); err != nil {
-				log.Printf("[ERROR] jobqueue: process job: %v", err)
+				q.log.Error("jobqueue_process_job_failed", "error", err)
 			}
 		}
 	}
@@ -177,7 +186,7 @@ func (q *JobQueue) processOneJob(ctx context.Context) error {
 func (q *JobQueue) runJobWithRecovery(ctx context.Context, jobID int64, jobType, payload string, attempts int) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[ERROR] jobqueue: panic in job %d (type=%s): %v", jobID, jobType, r)
+			q.log.Error("jobqueue_job_panic", "job_id", jobID, "job_type", jobType, "error", fmt.Errorf("%v", r))
 			q.markFailed(ctx, jobID, fmt.Sprintf("panic: %v", r), attempts+1)
 		}
 	}()
@@ -222,21 +231,21 @@ func (q *JobQueue) markComplete(ctx context.Context, jobID int64) {
 		jobID,
 	)
 	if err != nil {
-		log.Printf("[WARN] jobqueue: mark complete failed for job %d: %v", jobID, err)
+		q.log.Warn("jobqueue_mark_complete_failed", "job_id", jobID, "error", err)
 	}
 }
 
 func (q *JobQueue) markFailed(ctx context.Context, jobID int64, errMsg string, newAttempts int) {
 	if newAttempts >= 3 {
-		// Final failure — trigger rollback
-		log.Printf("[ERROR] jobqueue: job %d failed final attempt %d: %s — triggering rollback", jobID, newAttempts, errMsg)
+		q.log.Error("jobqueue_final_failure_triggering_rollback", "job_id", jobID, "attempts", newAttempts, "error", errMsg)
+		q.audit.Log(ctx, model.AuditLog{Operation: "job.failed", ResourceType: "job", ResourceID: jobID, Status: "failure", ErrorMessage: sanitize(errMsg)})
 		q.triggerRollback(ctx, jobID)
 		_, err := q.db.ExecContext(ctx,
 			"UPDATE jobs SET status='failed', attempts=?, last_error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
 			newAttempts, errMsg, jobID,
 		)
 		if err != nil {
-			log.Printf("[WARN] jobqueue: mark failed for job %d: %v", jobID, err)
+			q.log.Warn("jobqueue_mark_failed_db_error", "job_id", jobID, "error", err)
 		}
 		return
 	}
@@ -256,57 +265,57 @@ func (q *JobQueue) markFailed(ctx context.Context, jobID int64, errMsg string, n
 		newAttempts, errMsg, runAt.Format("2006-01-02 15:04:05"), jobID,
 	)
 	if err != nil {
-		log.Printf("[WARN] jobqueue: mark pending retry for job %d: %v", jobID, err)
+		q.log.Warn("jobqueue_mark_retry_failed", "job_id", jobID, "error", err)
 	}
-	log.Printf("[INFO] jobqueue: job %d retrying in %v (attempt %d)", jobID, delay, newAttempts)
+	q.log.Info("jobqueue_retrying", "job_id", jobID, "delay", delay, "attempt", newAttempts)
 }
 
 // triggerRollback determines which rollback to invoke based on the job type
 func (q *JobQueue) triggerRollback(ctx context.Context, jobID int64) {
+	q.audit.Log(ctx, model.AuditLog{Operation: "job.rollback", ResourceType: "job", ResourceID: jobID, Status: "triggered"})
 	var jobType, payload string
 	err := q.db.QueryRowContext(ctx,
 		"SELECT type, payload FROM jobs WHERE id=?", jobID,
 	).Scan(&jobType, &payload)
 	if err != nil {
-		log.Printf("[ERROR] jobqueue: rollback lookup for job %d: %v", jobID, err)
+		q.log.Error("jobqueue_rollback_lookup_failed", "job_id", jobID, "error", err)
 		return
 	}
 	switch jobType {
 	case JobProvisionNetwork:
 		var p NetworkJob
 		if err := json.Unmarshal([]byte(payload), &p); err != nil {
-			log.Printf("[ERROR] jobqueue: rollback unmarshal for job %d: %v", jobID, err)
+			q.log.Error("jobqueue_rollback_unmarshal_network_failed", "job_id", jobID, "error", err)
 			return
 		}
 		settings, err := q.networkService.settingsRepo.Get(ctx)
 		if err != nil || settings.Region == "" {
-			log.Printf("[ERROR] jobqueue: rollback network %d — no region available", p.ID)
+			q.log.Error("jobqueue_rollback_network_no_region", "network_id", p.ID)
 			return
 		}
 		q.networkService.RollbackNetwork(ctx, p.ID, settings.Region)
 	case JobProvisionVPS:
 		var p VPSJob
 		if err := json.Unmarshal([]byte(payload), &p); err != nil {
-			log.Printf("[ERROR] jobqueue: rollback unmarshal for job %d: %v", jobID, err)
+			q.log.Error("jobqueue_rollback_unmarshal_vps_failed", "job_id", jobID, "error", err)
 			return
 		}
 		vps, err := q.vpsProvisionService.vpsRepo.Get(ctx, p.ID)
 		if err != nil {
-			log.Printf("[ERROR] jobqueue: rollback load vps %d: %v", p.ID, err)
+			q.log.Error("jobqueue_rollback_load_vps_failed", "vps_id", p.ID, "error", err)
 			return
 		}
 		if !vps.NetworkID.Valid || !vps.OCIInstanceID.Valid {
-			log.Printf("[WARN] jobqueue: rollback vps %d — no instance/network — nothing to roll back", p.ID)
+			q.log.Warn("jobqueue_rollback_vps_no_instance", "vps_id", p.ID)
 			return
 		}
 		network, err := q.vpsProvisionService.networkRepo.Get(ctx, vps.NetworkID.Int64)
 		if err != nil {
-			log.Printf("[ERROR] jobqueue: rollback load network %d: %v", vps.NetworkID.Int64, err)
+			q.log.Error("jobqueue_rollback_load_network_failed", "network_id", vps.NetworkID.Int64, "error", err)
 			return
 		}
 		q.vpsProvisionService.RollbackVPS(ctx, p.ID, network.Region, vps.OCIInstanceID.String)
 	case JobTerminateVPS:
-		// Terminate failing is non-recoverable — just log. Manual review needed.
-		log.Printf("[WARN] jobqueue: terminate job %d failed final — manual review needed", jobID)
+		q.log.Warn("jobqueue_terminate_final_failure", "job_id", jobID)
 	}
 }

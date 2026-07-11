@@ -3,10 +3,10 @@ package service
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"github.com/oracle/oci-go-sdk/v65/core"
 
+	"github.com/llassingan/provessor/internal/logger"
 	"github.com/llassingan/provessor/internal/model"
 	"github.com/llassingan/provessor/internal/repository"
 	"github.com/llassingan/provessor/internal/sse"
@@ -21,6 +21,7 @@ type ReconcileService struct {
 	networkService      *NetworkService
 	vpsProvisionService *VPSProvisionService
 	broker              *sse.EventBroker
+	log                 *logger.Logger
 }
 
 func NewReconcileService(
@@ -32,6 +33,7 @@ func NewReconcileService(
 	networkService *NetworkService,
 	vpsProvisionService *VPSProvisionService,
 	broker *sse.EventBroker,
+	log *logger.Logger,
 ) *ReconcileService {
 	return &ReconcileService{
 		networkRepo:         networkRepo,
@@ -42,6 +44,7 @@ func NewReconcileService(
 		networkService:      networkService,
 		vpsProvisionService: vpsProvisionService,
 		broker:              broker,
+		log:                 log,
 	}
 }
 
@@ -76,30 +79,27 @@ func (s *ReconcileService) ReconcileOnStartup(ctx context.Context) error {
 }
 
 func (s *ReconcileService) reconcileNetwork(ctx context.Context, n model.Network) {
-	log.Printf("[INFO] reconcile: network %d status=%s state=%s", n.ID, n.Status, n.ProvisioningState)
+	s.log.Info("reconcile_network", "network_id", n.ID, "status", n.Status, "state", n.ProvisioningState)
 
-	// Load OCI settings to get region
 	settings, err := s.networkService.settingsRepo.Get(ctx)
 	if err != nil {
-		log.Printf("[ERROR] reconcile: network %d load settings failed: %v", n.ID, err)
+		s.log.Error("reconcile_network_load_settings_failed", "network_id", n.ID, "error", err)
 		return
 	}
 	region := settings.Region
 	if region == "" {
-		log.Printf("[ERROR] reconcile: network %d no region in settings", n.ID)
+		s.log.Error("reconcile_network_no_region", "network_id", n.ID)
 		return
 	}
 
-	// List tracked resources for this network
 	resources, err := s.networkResourceRepo.ListByNetwork(ctx, n.ID)
 	if err != nil {
-		log.Printf("[ERROR] reconcile: network %d list resources failed: %v", n.ID, err)
+		s.log.Error("reconcile_network_list_resources_failed", "network_id", n.ID, "error", err)
 		return
 	}
 
 	if len(resources) == 0 {
-		// No resources tracked — reset to pending so user can retry
-		log.Printf("[INFO] reconcile: network %d no tracked resources — resetting to pending", n.ID)
+		s.log.Info("reconcile_network_no_resources_resetting", "network_id", n.ID)
 		_ = s.networkRepo.UpdateStatus(ctx, n.ID, "pending")
 		_ = s.networkRepo.UpdateProvisioningState(ctx, n.ID, string(StatePending))
 		return
@@ -128,13 +128,10 @@ func (s *ReconcileService) reconcileNetwork(ctx context.Context, n model.Network
 	}
 
 	if anyExists {
-		// Resources exist in OCI — roll back (safer than partial resume)
-		log.Printf("[INFO] reconcile: network %d has live OCI resources — rolling back", n.ID)
+		s.log.Info("reconcile_network_rolling_back", "network_id", n.ID)
 		s.networkService.RollbackNetwork(ctx, n.ID, region)
 	} else {
-		// Resources tracked but not in OCI — they were deleted out-of-band
-		// Mark all as deleted, reset network to pending
-		log.Printf("[INFO] reconcile: network %d tracked resources gone — resetting to pending", n.ID)
+		s.log.Info("reconcile_network_resetting_to_pending", "network_id", n.ID)
 		for _, r := range resources {
 			_ = s.networkResourceRepo.MarkDeleted(ctx, r.ResourceOCID)
 		}
@@ -144,24 +141,22 @@ func (s *ReconcileService) reconcileNetwork(ctx context.Context, n model.Network
 }
 
 func (s *ReconcileService) reconcileVPS(ctx context.Context, v model.VPS) {
-	log.Printf("[INFO] reconcile: vps %d status=%s state=%s", v.ID, v.Status, v.ProvisioningState)
+	s.log.Info("reconcile_vps", "vps_id", v.ID, "status", v.Status, "state", v.ProvisioningState)
 
-	// Need region from network
 	if !v.NetworkID.Valid || v.NetworkID.Int64 == 0 {
-		log.Printf("[ERROR] reconcile: vps %d no network_id — resetting to pending", v.ID)
+		s.log.Error("reconcile_vps_no_network_id", "vps_id", v.ID)
 		_ = s.vpsRepo.UpdateStatus(ctx, v.ID, "pending")
 		_ = s.vpsRepo.UpdateProvisioningState(ctx, v.ID, string(StateVPSPending))
 		return
 	}
 	network, err := s.networkRepo.Get(ctx, v.NetworkID.Int64)
 	if err != nil {
-		log.Printf("[ERROR] reconcile: vps %d load network %d failed: %v", v.ID, v.NetworkID.Int64, err)
+		s.log.Error("reconcile_vps_load_network_failed", "vps_id", v.ID, "network_id", v.NetworkID.Int64, "error", err)
 		return
 	}
 
-	// If no instance ID — reset to pending (user can retry)
 	if !v.OCIInstanceID.Valid || v.OCIInstanceID.String == "" {
-		log.Printf("[INFO] reconcile: vps %d no instance ID — resetting to pending", v.ID)
+		s.log.Info("reconcile_vps_no_instance_id", "vps_id", v.ID)
 		_ = s.vpsRepo.UpdateStatus(ctx, v.ID, "pending")
 		_ = s.vpsRepo.UpdateProvisioningState(ctx, v.ID, string(StateVPSPending))
 		return
@@ -170,23 +165,21 @@ func (s *ReconcileService) reconcileVPS(ctx context.Context, v model.VPS) {
 	instanceID := v.OCIInstanceID.String
 	inst, gerr := s.oci.GetInstance(ctx, network.Region, instanceID)
 	if gerr != nil {
-		// Instance not found in OCI — roll back (delete tracked resources, set failed)
-		log.Printf("[INFO] reconcile: vps %d instance %s not found — rolling back", v.ID, instanceID)
+		s.log.Info("reconcile_vps_instance_not_found_rolling_back", "vps_id", v.ID, "instance_id", instanceID)
 		s.vpsProvisionService.RollbackVPS(ctx, v.ID, network.Region, instanceID)
 		return
 	}
 
 	switch inst.LifecycleState {
 	case core.InstanceLifecycleStateRunning:
-		log.Printf("[INFO] reconcile: vps %d instance RUNNING — marking running", v.ID)
+		s.log.Info("reconcile_vps_marking_running", "vps_id", v.ID)
 		_ = s.vpsRepo.UpdateStatus(ctx, v.ID, "running")
 		_ = s.vpsRepo.UpdateProvisioningState(ctx, v.ID, string(StateVPSReady))
 	case core.InstanceLifecycleStateTerminated, core.InstanceLifecycleStateTerminating:
-		log.Printf("[INFO] reconcile: vps %d instance TERMINATED — marking terminated", v.ID)
+		s.log.Info("reconcile_vps_marking_terminated", "vps_id", v.ID)
 		_ = s.vpsRepo.UpdateStatus(ctx, v.ID, "terminated")
 		_ = s.vpsRepo.UpdateProvisioningState(ctx, v.ID, string(StateVPSFailed))
 	default:
-		// PROVISIONING/STARTING/etc — leave alone, will reconcile next cycle
-		log.Printf("[INFO] reconcile: vps %d instance state %s — leaving in progress", v.ID, inst.LifecycleState)
+		s.log.Info("reconcile_vps_leaving_in_progress", "vps_id", v.ID, "instance_state", string(inst.LifecycleState))
 	}
 }

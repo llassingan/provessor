@@ -11,6 +11,7 @@ import (
 	"github.com/oracle/oci-go-sdk/v65/core"
 
 	"github.com/llassingan/provessor/internal/logger"
+	"github.com/llassingan/provessor/internal/model"
 	"github.com/llassingan/provessor/internal/repository"
 	"github.com/llassingan/provessor/internal/sse"
 )
@@ -22,6 +23,7 @@ type NetworkService struct {
 	oci                 *OCIComputeService
 	broker              *sse.EventBroker
 	log                 *logger.Logger
+	audit               *repository.AuditLogRepository
 }
 
 func NewNetworkService(
@@ -31,6 +33,7 @@ func NewNetworkService(
 	oci *OCIComputeService,
 	broker *sse.EventBroker,
 	log *logger.Logger,
+	audit *repository.AuditLogRepository,
 ) *NetworkService {
 	return &NetworkService{
 		settingsRepo:        settingsRepo,
@@ -39,6 +42,7 @@ func NewNetworkService(
 		oci:                 oci,
 		broker:              broker,
 		log:                 log,
+		audit:               audit,
 	}
 }
 
@@ -136,10 +140,18 @@ func (s *NetworkService) createOrGetSubnet(ctx context.Context, networkID int64,
 	return ocid, nil
 }
 
-func (s *NetworkService) ProvisionNetwork(ctx context.Context, networkID int64) error {
+func (s *NetworkService) ProvisionNetwork(ctx context.Context, networkID int64) (err error) {
 	channel := fmt.Sprintf("network:%d", networkID)
 
 	s.log.Debug("provision_network_start", "network_id", networkID, "channel", channel)
+
+	defer func() {
+		if err != nil {
+			s.audit.Log(ctx, model.AuditLog{Operation: "network.provision", ResourceType: "network", ResourceID: networkID, Status: "failure", ErrorMessage: sanitize(err.Error())})
+		} else {
+			s.audit.Log(ctx, model.AuditLog{Operation: "network.provision", ResourceType: "network", ResourceID: networkID, Status: "success"})
+		}
+	}()
 
 	emitStatus := func(step, message string) {
 		s.broker.Publish(channel, sse.SSEEvent{
@@ -309,6 +321,7 @@ func (s *NetworkService) ProvisionNetwork(ctx context.Context, networkID int64) 
 }
 
 func (s *NetworkService) RollbackNetwork(ctx context.Context, networkID int64, region string) {
+	s.audit.Log(ctx, model.AuditLog{Operation: "network.rollback", ResourceType: "network", ResourceID: networkID, Status: "started"})
 	if err := s.networkRepo.UpdateProvisioningState(ctx, networkID, string(StateRollingBack)); err != nil {
 		s.log.Warn("network_state_update_failed", "network_id", networkID, "state", StateRollingBack, "error", err)
 	}
@@ -357,7 +370,14 @@ func (s *NetworkService) failNetwork(ctx context.Context, networkID int64, chann
 	})
 }
 
-func (s *NetworkService) DestroyNetwork(ctx context.Context, networkID int64) error {
+func (s *NetworkService) DestroyNetwork(ctx context.Context, networkID int64) (err error) {
+	defer func() {
+		if err != nil {
+			s.audit.Log(ctx, model.AuditLog{Operation: "network.destroy", ResourceType: "network", ResourceID: networkID, Status: "failure", ErrorMessage: sanitize(err.Error())})
+		} else {
+			s.audit.Log(ctx, model.AuditLog{Operation: "network.destroy", ResourceType: "network", ResourceID: networkID, Status: "success"})
+		}
+	}()
 	channel := fmt.Sprintf("network:%d", networkID)
 	s.log.Debug("destroy_network_start", "network_id", networkID)
 
