@@ -24,6 +24,12 @@ func (r *AuditLogRepository) Create(ctx context.Context, entry model.AuditLog) e
 	return err
 }
 
+// Log writes an audit entry and silently ignores write errors so that
+// audit failures never break primary operations.
+func (r *AuditLogRepository) Log(ctx context.Context, entry model.AuditLog) {
+	_ = r.Create(ctx, entry)
+}
+
 func (r *AuditLogRepository) List(ctx context.Context, limit, offset int) ([]model.AuditLog, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, operation, resource_type, resource_id, provider, status, error_message, created_at

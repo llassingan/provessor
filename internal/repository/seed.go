@@ -2,27 +2,28 @@ package repository
 
 import (
 	"database/sql"
-	"log"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/llassingan/provessor/internal/logger"
 )
 
-func SeedAll(db *sql.DB, projectRoot string, dev bool) {
+func SeedAll(db *sql.DB, projectRoot string, dev bool, log *logger.Logger) {
 	if !dev {
 		return
 	}
 
 	if err := seedTemplates(db, projectRoot); err != nil {
-		log.Printf("seed templates: %v (continuing)", err)
+		log.Warn("seed_templates_failed", "error", err)
 	}
 
 	if err := seedNetworks(db); err != nil {
-		log.Printf("seed networks: %v (continuing)", err)
+		log.Warn("seed_networks_failed", "error", err)
 	}
 
 	if err := seedVPS(db); err != nil {
-		log.Printf("seed vps: %v (continuing)", err)
+		log.Warn("seed_vps_failed", "error", err)
 	}
 }
 

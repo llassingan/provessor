@@ -12,16 +12,16 @@ import (
 
 func (s *Server) mountRoutes() {
 	r := s.router
-	authHandler := handler.NewAuthHandler(s.authService)
+	authHandler := handler.NewAuthHandler(s.authService, s.auditLogRepo)
 
-	r.Use(RateLimitAPIByIP(s.limiters.globalAPI))
+	r.Use(RateLimitAPIByIP(s.limiters.globalAPI, s.auditLogRepo))
 
 	r.Get("/api/health", handleHealth)
 	r.Get("/api/auth/init", authHandler.HandleInit)
 	r.Get("/api/auth/csrf", HandleCSRFToken(s.csrfSecret, !s.config.Dev))
 
-	r.With(RateLimitByIP(s.limiters.signup)).Post("/api/auth/signup", authHandler.HandleSignup)
-	r.With(RateLimitByIP(s.limiters.login)).Post("/api/auth/login", authHandler.HandleLogin)
+	r.With(RateLimitByIP(s.limiters.signup, s.auditLogRepo)).Post("/api/auth/signup", authHandler.HandleSignup)
+	r.With(RateLimitByIP(s.limiters.login, s.auditLogRepo)).Post("/api/auth/login", authHandler.HandleLogin)
 	r.With(CSRFMiddleware(s.csrfSecret)).Post("/api/auth/logout", authHandler.HandleLogout)
 
 	r.Group(func(r chi.Router) {
@@ -33,19 +33,19 @@ func (s *Server) mountRoutes() {
 			r.Get("/api/shapes", handleListShapesStub)
 		}
 
-		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/vps", s.vpsHandler.HandleCreateVPS)
+		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Post("/api/vps", s.vpsHandler.HandleCreateVPS)
 		r.Get("/api/vps", s.vpsHandler.HandleListVPS)
 		r.Get("/api/vps/{id}", s.vpsHandler.HandleGetVPS)
-		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Delete("/api/vps/{id}", s.vpsHandler.HandleDeleteVPS)
-		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/vps/{id}/start", s.vpsHandler.HandleStartVPS)
-		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/vps/{id}/stop", s.vpsHandler.HandleStopVPS)
-		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/vps/{id}/restart", s.vpsHandler.HandleRestartVPS)
-		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/vps/{id}/reset", s.vpsHandler.HandleResetVPS)
-		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/vps/{id}/reset-password", s.vpsHandler.HandleResetPasswordVPS)
-		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/vps/{id}/terminate", s.vpsHandler.HandleTerminateVPS)
+		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Delete("/api/vps/{id}", s.vpsHandler.HandleDeleteVPS)
+		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Post("/api/vps/{id}/start", s.vpsHandler.HandleStartVPS)
+		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Post("/api/vps/{id}/stop", s.vpsHandler.HandleStopVPS)
+		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Post("/api/vps/{id}/restart", s.vpsHandler.HandleRestartVPS)
+		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Post("/api/vps/{id}/reset", s.vpsHandler.HandleResetVPS)
+		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Post("/api/vps/{id}/reset-password", s.vpsHandler.HandleResetPasswordVPS)
+		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Post("/api/vps/{id}/terminate", s.vpsHandler.HandleTerminateVPS)
 		r.Get("/api/vps/{id}/firewall", s.vpsHandler.HandleGetFirewall)
-		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/vps/{id}/firewall", s.vpsHandler.HandleUpdateFirewall)
-		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/vps/{id}/refresh-ips", s.vpsHandler.HandleRefreshIPs)
+		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Post("/api/vps/{id}/firewall", s.vpsHandler.HandleUpdateFirewall)
+		r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Post("/api/vps/{id}/refresh-ips", s.vpsHandler.HandleRefreshIPs)
 
 		if s.sseHandler != nil {
 			r.Get("/api/vps/{id}/events", s.sseHandler.HandleVPSEvents)
@@ -57,102 +57,102 @@ func (s *Server) mountRoutes() {
 
 		if s.templateHandler != nil {
 			r.Get("/api/templates", s.templateHandler.HandleListTemplates)
-			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/templates", s.templateHandler.HandleCreateTemplate)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Post("/api/templates", s.templateHandler.HandleCreateTemplate)
 		} else {
 			r.Get("/api/templates", handleListTemplatesStub)
-			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/templates", handleCreateTemplateStub)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Post("/api/templates", handleCreateTemplateStub)
 		}
 
 		if s.settingsHandler != nil {
 			r.Get("/api/settings", s.settingsHandler.HandleGetSettings)
-			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Put("/api/settings", s.settingsHandler.HandleUpdateSettings)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Put("/api/settings", s.settingsHandler.HandleUpdateSettings)
 			r.Get("/api/regions", s.settingsHandler.HandleListRegions)
 		} else {
 			r.Get("/api/settings", handleGetSettingsStub)
-			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Put("/api/settings", handleUpdateSettingsStub)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Put("/api/settings", handleUpdateSettingsStub)
 			r.Get("/api/regions", handleListRegionsStub)
 		}
 
 		if s.networkHandler != nil {
-			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/networks", s.networkHandler.HandleCreateNetwork)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Post("/api/networks", s.networkHandler.HandleCreateNetwork)
 			r.Get("/api/networks", s.networkHandler.HandleListNetworks)
 			r.Get("/api/networks/{id}", s.networkHandler.HandleGetNetwork)
-			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Delete("/api/networks/{id}", s.networkHandler.HandleDeleteNetwork)
-			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/networks/{id}/provision", s.networkHandler.HandleNetworkProvision)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Delete("/api/networks/{id}", s.networkHandler.HandleDeleteNetwork)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Post("/api/networks/{id}/provision", s.networkHandler.HandleNetworkProvision)
 			r.Get("/api/networks/{id}/events", s.networkHandler.HandleNetworkProvisionEvents)
 
-			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/network/setup", s.networkHandler.HandleOldNetworkSetup)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Post("/api/network/setup", s.networkHandler.HandleOldNetworkSetup)
 			r.Get("/api/network/status", s.networkHandler.HandleOldNetworkStatus)
 		} else {
-			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/networks", handleCreateNetworkStub)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Post("/api/networks", handleCreateNetworkStub)
 			r.Get("/api/networks", handleListNetworksStub)
 			r.Get("/api/networks/{id}", handleGetNetworkStub)
-			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Delete("/api/networks/{id}", handleDeleteNetworkStub)
-			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/networks/{id}/provision", handleNetworkProvisionStub)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Delete("/api/networks/{id}", handleDeleteNetworkStub)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Post("/api/networks/{id}/provision", handleNetworkProvisionStub)
 			r.Get("/api/networks/{id}/events", handleNetworkEventsStub)
 
-			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions)).Post("/api/network/setup", handleNetworkSetupStub)
+			r.With(CSRFMiddleware(s.csrfSecret), RateLimitByUser(s.limiters.userActions, s.auditLogRepo)).Post("/api/network/setup", handleNetworkSetupStub)
 			r.Get("/api/network/status", handleNetworkStatusStub)
 		}
 	})
 
-	r.With(RateLimitByIP(s.limiters.credentialsCallback)).Post("/api/vps/{id}/credentials", s.vpsHandler.HandleCredentialsCallback)
+	r.With(RateLimitByIP(s.limiters.credentialsCallback, s.auditLogRepo)).Post("/api/vps/{id}/credentials", s.vpsHandler.HandleCredentialsCallback)
 }
 
 func handleListTemplatesStub(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "not implemented yet"})
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented"})
 }
 
 func handleListShapesStub(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, []interface{}{})
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented"})
 }
 
 func handleCreateTemplateStub(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "not implemented yet"})
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented"})
 }
 
 func handleCreateNetworkStub(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "not implemented yet"})
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented"})
 }
 
 func handleListNetworksStub(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, []interface{}{})
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented"})
 }
 
 func handleGetNetworkStub(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "not implemented yet"})
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented"})
 }
 
 func handleDeleteNetworkStub(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented"})
 }
 
 func handleNetworkProvisionStub(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "network_provisioning_started"})
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented"})
 }
 
 func handleNetworkEventsStub(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "not implemented yet"})
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented"})
 }
 
 func handleGetSettingsStub(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "not implemented yet"})
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented"})
 }
 
 func handleUpdateSettingsStub(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "not implemented yet"})
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented"})
 }
 
 func handleListRegionsStub(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, []interface{}{})
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented"})
 }
 
 func handleNetworkSetupStub(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "not implemented yet"})
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented"})
 }
 
 func handleNetworkStatusStub(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "not implemented yet"})
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented"})
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -164,32 +164,12 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func handleCreateVPSStub(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "not implemented yet"})
-}
-
-func handleListVPSStub(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "not implemented yet"})
-}
-
-func handleGetVPSStub(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "not implemented yet"})
-}
-
-func handleDeleteVPSStub(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "not implemented yet"})
-}
-
 func handleSSEEventsStub(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "not implemented yet"})
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented"})
 }
 
 func handleNetworkSSEStub(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "not implemented yet"})
-}
-
-func handleCredentialsCallbackStub(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "not implemented yet"})
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "not implemented"})
 }
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {

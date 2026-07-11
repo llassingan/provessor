@@ -12,6 +12,7 @@ import (
 
 	"github.com/llassingan/provessor/internal/config"
 	"github.com/llassingan/provessor/internal/handler"
+	"github.com/llassingan/provessor/internal/repository"
 	"github.com/llassingan/provessor/internal/service"
 	"github.com/llassingan/provessor/internal/sse"
 )
@@ -31,6 +32,8 @@ type Server struct {
 	templateHandler *handler.TemplateHandler
 	networkHandler  *handler.NetworkHandler
 	vpsHandler      *handler.VPSHandler
+
+	auditLogRepo *repository.AuditLogRepository
 }
 
 func New(
@@ -43,6 +46,7 @@ func New(
 	templateHandler *handler.TemplateHandler,
 	networkHandler *handler.NetworkHandler,
 	vpsHandler *handler.VPSHandler,
+	auditLogRepo *repository.AuditLogRepository,
 ) *Server {
 	csrfSecret, err := hex.DecodeString(cfg.DBEncryptionKey)
 	if err != nil {
@@ -61,6 +65,7 @@ func New(
 		vpsHandler:      vpsHandler,
 		limiters:        newServerLimiters(),
 		csrfSecret:      csrfSecret,
+		auditLogRepo:    auditLogRepo,
 	}
 
 	s.setupCORS()

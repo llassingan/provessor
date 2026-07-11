@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/llassingan/provessor/internal/handler"
+	"github.com/llassingan/provessor/internal/model"
+	"github.com/llassingan/provessor/internal/repository"
 	"github.com/llassingan/provessor/internal/service"
 )
 
@@ -111,8 +113,8 @@ func (l *RateLimiter) pruneExpired(now time.Time) {
 	l.lastPrune = now
 }
 
-func RateLimitAPIByIP(limiter *RateLimiter) func(http.Handler) http.Handler {
-	ipLimiter := RateLimitByIP(limiter)
+func RateLimitAPIByIP(limiter *RateLimiter, auditRepo *repository.AuditLogRepository) func(http.Handler) http.Handler {
+	ipLimiter := RateLimitByIP(limiter, auditRepo)
 	return func(next http.Handler) http.Handler {
 		limited := ipLimiter(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -125,27 +127,27 @@ func RateLimitAPIByIP(limiter *RateLimiter) func(http.Handler) http.Handler {
 	}
 }
 
-func RateLimitByIP(limiter *RateLimiter) func(http.Handler) http.Handler {
+func RateLimitByIP(limiter *RateLimiter, auditRepo *repository.AuditLogRepository) func(http.Handler) http.Handler {
 	return rateLimitByKey(limiter, func(r *http.Request) (string, bool) {
 		ip := remoteIP(r.RemoteAddr)
 		if ip == "" {
 			return "", false
 		}
 		return ip, true
-	})
+	}, auditRepo)
 }
 
-func RateLimitByUser(limiter *RateLimiter) func(http.Handler) http.Handler {
+func RateLimitByUser(limiter *RateLimiter, auditRepo *repository.AuditLogRepository) func(http.Handler) http.Handler {
 	return rateLimitByKey(limiter, func(r *http.Request) (string, bool) {
 		userID, ok := handler.UserIDFromContext(r.Context())
 		if !ok {
 			return "", false
 		}
 		return strconv.FormatInt(userID, 10), true
-	})
+	}, auditRepo)
 }
 
-func rateLimitByKey(limiter *RateLimiter, keyFunc func(*http.Request) (string, bool)) func(http.Handler) http.Handler {
+func rateLimitByKey(limiter *RateLimiter, keyFunc func(*http.Request) (string, bool), auditRepo *repository.AuditLogRepository) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodOptions {
@@ -163,6 +165,9 @@ func rateLimitByKey(limiter *RateLimiter, keyFunc func(*http.Request) (string, b
 			if !allowed {
 				if retryAfter > 0 {
 					w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(retryAfter.Seconds()))))
+				}
+				if auditRepo != nil {
+					auditRepo.Log(r.Context(), model.AuditLog{Operation: "rate_limit.exceeded", ResourceType: "api", Status: "blocked"})
 				}
 				writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
 				return

@@ -50,41 +50,42 @@ func main() {
 		log.Fatalf("auth service: %v", err)
 	}
 
-	repository.SeedAll(database, ".", cfg.Dev)
+	repository.SeedAll(database, ".", cfg.Dev, appLogger)
 
 	broker := sse.NewEventBroker()
 
+	auditLogRepo := repository.NewAuditLogRepository(database)
+
 	sseHandler := handler.NewSSEHandler(broker)
 	settingsRepo := repository.NewSettingsRepository(database)
-	settingsHandler := handler.NewSettingsHandler(settingsRepo)
+	settingsHandler := handler.NewSettingsHandler(settingsRepo, appLogger, auditLogRepo)
 
 	networkRepo := repository.NewNetworkRepository(database)
 	networkResourceRepo := repository.NewNetworkResourceRepository(database)
 	templateRepo := repository.NewTemplateRepository(database)
-	templateHandler := handler.NewTemplateHandler(templateRepo)
+	templateHandler := handler.NewTemplateHandler(templateRepo, auditLogRepo)
 	ociComputeService := service.NewOCIComputeService(settingsRepo, appLogger)
-	networkService := service.NewNetworkService(settingsRepo, networkRepo, networkResourceRepo, ociComputeService, broker, appLogger)
+	networkService := service.NewNetworkService(settingsRepo, networkRepo, networkResourceRepo, ociComputeService, broker, appLogger, auditLogRepo)
 
 	vpsRepo := repository.NewVPSRepository(database)
 
 	vpsResourceRepo := repository.NewVPSResourceRepository(database)
-	auditLogRepo := repository.NewAuditLogRepository(database)
-	_ = auditLogRepo // wired into services in Phase 9; held at server level for now
-	vpsProvisionService := service.NewVPSProvisionService(ociComputeService, vpsRepo, vpsResourceRepo, networkRepo, templateRepo, broker, settingsRepo, cfg.APIURL)
+	vpsProvisionService := service.NewVPSProvisionService(ociComputeService, vpsRepo, vpsResourceRepo, networkRepo, templateRepo, broker, settingsRepo, cfg.APIURL, appLogger, auditLogRepo)
 
-	jobQueue := service.NewJobQueue(database, networkService, vpsProvisionService)
+	jobQueue := service.NewJobQueue(database, networkService, vpsProvisionService, appLogger, auditLogRepo)
 
-	networkHandler := handler.NewNetworkHandler(networkService, networkRepo, settingsRepo, sseHandler, broker, jobQueue)
-	vpsHandler := handler.NewVPSHandler(vpsRepo, templateRepo, networkRepo, settingsRepo, vpsProvisionService, jobQueue)
+	networkHandler := handler.NewNetworkHandler(networkService, networkRepo, settingsRepo, sseHandler, broker, jobQueue, appLogger)
+	vpsHandler := handler.NewVPSHandler(vpsRepo, templateRepo, networkRepo, settingsRepo, vpsProvisionService, jobQueue, appLogger, auditLogRepo)
 
 	srv := server.New(
 		database, cfg, authService, broker,
 		sseHandler, settingsHandler, templateHandler, networkHandler, vpsHandler,
+		auditLogRepo,
 	)
 
 	reconcileService := service.NewReconcileService(
 		networkRepo, vpsRepo, networkResourceRepo, vpsResourceRepo,
-		ociComputeService, networkService, vpsProvisionService, broker,
+		ociComputeService, networkService, vpsProvisionService, broker, appLogger,
 	)
 	if err := reconcileService.ReconcileOnStartup(context.Background()); err != nil {
 		appLogger.Warn("startup_reconciliation_failed", "error", err)
@@ -103,14 +104,14 @@ func main() {
 
 	go func() {
 		addr := "0.0.0.0:10000"
-		log.Printf("server listening on %s", addr)
+		appLogger.Info("server_listening", "addr", addr)
 		if err := srv.ListenAndServe(addr); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server: %v", err)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("shutting down...")
+	appLogger.Info("shutting_down")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
