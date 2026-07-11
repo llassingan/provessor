@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/llassingan/provessor/internal/logger"
 	"github.com/llassingan/provessor/internal/repository"
 	"github.com/llassingan/provessor/internal/service"
 	"github.com/llassingan/provessor/internal/sse"
@@ -23,6 +23,7 @@ type NetworkHandler struct {
 	sseHandler   *SSEHandler
 	broker       *sse.EventBroker
 	jobQueue     *service.JobQueue
+	log          *logger.Logger
 }
 
 func NewNetworkHandler(
@@ -32,6 +33,7 @@ func NewNetworkHandler(
 	sseHandler *SSEHandler,
 	broker *sse.EventBroker,
 	jobQueue *service.JobQueue,
+	log *logger.Logger,
 ) *NetworkHandler {
 	return &NetworkHandler{
 		service:      service,
@@ -40,6 +42,7 @@ func NewNetworkHandler(
 		sseHandler:   sseHandler,
 		broker:       broker,
 		jobQueue:     jobQueue,
+		log:          log,
 	}
 }
 
@@ -63,7 +66,7 @@ type createNetworkRequest struct {
 func (h *NetworkHandler) HandleCreateNetwork(w http.ResponseWriter, r *http.Request) {
 	var req createNetworkRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("[DEBUG] create_network: invalid body: %v", err)
+		h.log.Debug("create_network_invalid_body", "error", err)
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -71,22 +74,22 @@ func (h *NetworkHandler) HandleCreateNetwork(w http.ResponseWriter, r *http.Requ
 	req.Name = strings.TrimSpace(req.Name)
 	req.Region = strings.TrimSpace(req.Region)
 
-	log.Printf("[DEBUG] create_network: name=%q region=%q", req.Name, req.Region)
+	h.log.Debug("create_network_request", "name", req.Name, "region", req.Region)
 
 	if req.Name == "" {
-		log.Printf("[DEBUG] create_network: name is empty")
+		h.log.Debug("create_network_empty_name")
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
 	if req.Region == "" {
-		log.Printf("[DEBUG] create_network: region is empty")
+		h.log.Debug("create_network_empty_region")
 		writeError(w, http.StatusBadRequest, "region is required")
 		return
 	}
 
 	network, err := h.networkRepo.Create(r.Context(), req.Name, req.Region)
 	if err != nil {
-		log.Printf("[DEBUG] create_network: repo.Create failed: %v", err)
+		h.log.Debug("create_network_repo_create_failed", "error", err)
 		if strings.Contains(err.Error(), "maximum") {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -95,7 +98,7 @@ func (h *NetworkHandler) HandleCreateNetwork(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	log.Printf("[DEBUG] create_network: created network id=%d name=%q region=%q status=%s", network.ID, network.Name, network.Region, network.Status)
+	h.log.Debug("create_network_created", "network_id", network.ID, "name", network.Name, "region", network.Region, "status", network.Status)
 	writeJSON(w, http.StatusCreated, network)
 }
 
@@ -137,13 +140,13 @@ func (h *NetworkHandler) HandleDeleteNetwork(w http.ResponseWriter, r *http.Requ
 	}
 
 	if h.service != nil {
-		log.Printf("[DEBUG] delete_network: destroying network %d in OCI", id)
+		h.log.Debug("delete_network_destroying", "network_id", id)
 		if err := h.service.DestroyNetwork(r.Context(), id); err != nil {
-			log.Printf("[DEBUG] delete_network: destroy failed: %v", err)
+			h.log.Debug("delete_network_destroy_failed", "error", err)
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to destroy network: %v", err))
 			return
 		}
-		log.Printf("[DEBUG] delete_network: network %d destroyed in OCI", id)
+		h.log.Debug("delete_network_destroyed", "network_id", id)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -157,7 +160,7 @@ func (h *NetworkHandler) HandleNetworkProvision(w http.ResponseWriter, r *http.R
 	}
 
 	if err := h.jobQueue.Enqueue(context.Background(), service.JobProvisionNetwork, service.NetworkJob{ID: id}); err != nil {
-		log.Printf("[ERROR] network_provision: enqueue failed for network %d: %v", id, err)
+		h.log.Error("network_provision_enqueue_failed", "network_id", id, "error", err)
 		http.Error(w, "failed to queue provisioning", http.StatusInternalServerError)
 		return
 	}

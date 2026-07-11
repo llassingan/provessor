@@ -11,11 +11,12 @@ import (
 )
 
 type TemplateHandler struct {
-	repo *repository.TemplateRepository
+	repo  *repository.TemplateRepository
+	audit *repository.AuditLogRepository
 }
 
-func NewTemplateHandler(repo *repository.TemplateRepository) *TemplateHandler {
-	return &TemplateHandler{repo: repo}
+func NewTemplateHandler(repo *repository.TemplateRepository, audit *repository.AuditLogRepository) *TemplateHandler {
+	return &TemplateHandler{repo: repo, audit: audit}
 }
 
 type templateListItem struct {
@@ -117,10 +118,12 @@ func (h *TemplateHandler) HandleCreateTemplate(w http.ResponseWriter, r *http.Re
 
 	created, err := h.repo.Create(r.Context(), t)
 	if err != nil {
+		h.audit.Log(r.Context(), model.AuditLog{Operation: "template.create", ResourceType: "template", Status: "failure", ErrorMessage: "failed to create template"})
 		writeError(w, http.StatusInternalServerError, "failed to create template")
 		return
 	}
 
+	h.audit.Log(r.Context(), model.AuditLog{Operation: "template.create", ResourceType: "template", ResourceID: created.ID, Status: "success"})
 	writeJSON(w, http.StatusCreated, templateToList(created))
 }
 

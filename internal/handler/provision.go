@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/llassingan/provessor/internal/logger"
 	"github.com/llassingan/provessor/internal/model"
 	"github.com/llassingan/provessor/internal/repository"
 	"github.com/llassingan/provessor/internal/service"
@@ -25,6 +25,8 @@ type VPSHandler struct {
 	settingsRepo     *repository.SettingsRepository
 	provisionService vpsProvisioner
 	jobQueue         *service.JobQueue
+	log              *logger.Logger
+	audit            *repository.AuditLogRepository
 }
 
 type vpsProvisioner interface {
@@ -46,6 +48,8 @@ func NewVPSHandler(
 	settingsRepo *repository.SettingsRepository,
 	provisionService vpsProvisioner,
 	jobQueue *service.JobQueue,
+	log *logger.Logger,
+	audit *repository.AuditLogRepository,
 ) *VPSHandler {
 	return &VPSHandler{
 		vpsRepo:          vpsRepo,
@@ -54,6 +58,8 @@ func NewVPSHandler(
 		settingsRepo:     settingsRepo,
 		provisionService: provisionService,
 		jobQueue:         jobQueue,
+		log:              log,
+		audit:            audit,
 	}
 }
 
@@ -70,57 +76,57 @@ type createVPSRequest struct {
 func (h *VPSHandler) HandleCreateVPS(w http.ResponseWriter, r *http.Request) {
 	var req createVPSRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("[DEBUG] create_vps: invalid body: %v", err)
+		h.log.Debug("create_vps_invalid_body", "error", err)
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	log.Printf("[DEBUG] create_vps: display_name=%q template_id=%d network_id=%d", req.DisplayName, req.TemplateID, req.NetworkID)
+	h.log.Debug("create_vps_request", "display_name", req.DisplayName, "template_id", req.TemplateID, "network_id", req.NetworkID)
 
 	if req.DisplayName == "" {
-		log.Printf("[DEBUG] create_vps: display_name is empty")
+		h.log.Debug("create_vps_empty_display_name")
 		writeError(w, http.StatusBadRequest, "display_name is required")
 		return
 	}
 
 	if req.NetworkID == 0 {
-		log.Printf("[DEBUG] create_vps: network_id is 0")
+		h.log.Debug("create_vps_empty_network_id")
 		writeError(w, http.StatusBadRequest, "network_id is required")
 		return
 	}
 
 	network, err := h.networkRepo.Get(r.Context(), req.NetworkID)
 	if err != nil {
-		log.Printf("[DEBUG] create_vps: get network failed: %v", err)
+		h.log.Debug("create_vps_get_network_failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to load network")
 		return
 	}
 	if network == nil {
-		log.Printf("[DEBUG] create_vps: network %d not found", req.NetworkID)
+		h.log.Debug("create_vps_network_not_found", "network_id", req.NetworkID)
 		writeError(w, http.StatusNotFound, "network not found")
 		return
 	}
 	if network.Status != "ready" {
-		log.Printf("[DEBUG] create_vps: network %d not ready (status=%s)", req.NetworkID, network.Status)
+		h.log.Debug("create_vps_network_not_ready", "network_id", req.NetworkID, "status", network.Status)
 		writeError(w, http.StatusBadRequest, "network is not ready for provisioning")
 		return
 	}
 
-	log.Printf("[DEBUG] create_vps: network %d is ready (region=%s)", req.NetworkID, network.Region)
+	h.log.Debug("create_vps_network_ready", "network_id", req.NetworkID, "region", network.Region)
 
 	template, err := h.tmplRepo.Get(r.Context(), req.TemplateID)
 	if err != nil {
-		log.Printf("[DEBUG] create_vps: get template failed: %v", err)
+		h.log.Debug("create_vps_get_template_failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to load template")
 		return
 	}
 	if template == nil {
-		log.Printf("[DEBUG] create_vps: template %d not found", req.TemplateID)
+		h.log.Debug("create_vps_template_not_found", "template_id", req.TemplateID)
 		writeError(w, http.StatusNotFound, "template not found")
 		return
 	}
 
-	log.Printf("[DEBUG] create_vps: template %q loaded (shape=%s ocpu=%.1f mem=%.1f boot=%d)", template.Name, template.Shape, template.DefaultOCPU, template.DefaultMemory, template.BootVolumeSizeGB)
+	h.log.Debug("create_vps_template_loaded", "name", template.Name, "shape", template.Shape, "ocpu", template.DefaultOCPU, "memory_gb", template.DefaultMemory, "boot_volume_gb", template.BootVolumeSizeGB)
 
 	vps := &model.VPS{
 		DisplayName:      req.DisplayName,
@@ -148,15 +154,15 @@ func (h *VPSHandler) HandleCreateVPS(w http.ResponseWriter, r *http.Request) {
 
 	created, err := h.vpsRepo.Create(r.Context(), vps)
 	if err != nil {
-		log.Printf("[DEBUG] create_vps: repo.Create failed: %v", err)
+		h.log.Debug("create_vps_repo_create_failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to create VPS")
 		return
 	}
 
-	log.Printf("[DEBUG] create_vps: created vps id=%d display_name=%q shape=%s ocpu=%.1f mem=%.1f", created.ID, created.DisplayName, created.Shape, created.OCPU, created.MemoryGB)
+	h.log.Debug("create_vps_created", "vps_id", created.ID, "display_name", created.DisplayName, "shape", created.Shape, "ocpu", created.OCPU, "memory_gb", created.MemoryGB)
 
 	if err := h.jobQueue.Enqueue(context.Background(), service.JobProvisionVPS, service.VPSJob{ID: created.ID}); err != nil {
-		log.Printf("[ERROR] provision_vps: enqueue failed for vps %d: %v", created.ID, err)
+		h.log.Error("provision_vps_enqueue_failed", "vps_id", created.ID, "error", err)
 	}
 
 	writeJSON(w, http.StatusOK, created)
@@ -196,35 +202,35 @@ func (h *VPSHandler) HandleGetVPS(w http.ResponseWriter, r *http.Request) {
 func (h *VPSHandler) HandleTerminateVPS(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		log.Printf("[DEBUG] terminate_vps: invalid id: %v", err)
+		h.log.Debug("terminate_vps_invalid_id", "error", err)
 		writeError(w, http.StatusBadRequest, "invalid VPS id")
 		return
 	}
 
-	log.Printf("[DEBUG] terminate_vps: vps_id=%d", id)
+	h.log.Debug("terminate_vps_request", "vps_id", id)
 
 	vps, err := h.vpsRepo.Get(r.Context(), id)
 	if err != nil {
-		log.Printf("[DEBUG] terminate_vps: vps %d get failed: %v", id, err)
+		h.log.Debug("terminate_vps_get_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to get VPS")
 		return
 	}
 	if vps == nil {
-		log.Printf("[DEBUG] terminate_vps: vps %d not found", id)
+		h.log.Debug("terminate_vps_not_found", "vps_id", id)
 		writeError(w, http.StatusNotFound, "VPS not found")
 		return
 	}
 
-	log.Printf("[DEBUG] terminate_vps: vps %d current status=%s oci_instance_id=%s", id, vps.Status, vps.OCIInstanceID.String)
+	h.log.Debug("terminate_vps_status", "vps_id", id, "status", vps.Status, "oci_instance_id", vps.OCIInstanceID.String)
 
 	if vps.Status == "terminated" {
-		log.Printf("[DEBUG] terminate_vps: vps %d already terminated", id)
+		h.log.Debug("terminate_vps_already_terminated", "vps_id", id)
 		writeError(w, http.StatusConflict, "VPS is already terminated")
 		return
 	}
 
 	if vps.Status == "terminating" {
-		log.Printf("[DEBUG] terminate_vps: vps %d already terminating", id)
+		h.log.Debug("terminate_vps_already_terminating", "vps_id", id)
 		writeError(w, http.StatusConflict, "VPS termination is already in progress")
 		return
 	}
@@ -237,7 +243,7 @@ func (h *VPSHandler) HandleTerminateVPS(w http.ResponseWriter, r *http.Request) 
 	if vps.OCIInstanceID.Valid && vps.OCIInstanceID.String != "" && h.provisionService != nil {
 		region, err := h.provisionService.VPSRegionForDelete(r.Context(), id)
 		if err != nil {
-			log.Printf("[DEBUG] terminate_vps: cannot determine region for vps %d: %v", id, err)
+			h.log.Debug("terminate_vps_region_failed", "vps_id", id, "error", err)
 			_ = h.vpsRepo.UpdateStatus(r.Context(), id, vps.Status)
 			writeError(w, http.StatusInternalServerError, "failed to determine VPS region")
 			return
@@ -247,7 +253,7 @@ func (h *VPSHandler) HandleTerminateVPS(w http.ResponseWriter, r *http.Request) 
 			Region:     region,
 			InstanceID: vps.OCIInstanceID.String,
 		}); err != nil {
-			log.Printf("[ERROR] terminate_vps: enqueue failed for vps %d: %v", id, err)
+			h.log.Error("terminate_vps_enqueue_failed", "vps_id", id, "error", err)
 			_ = h.vpsRepo.UpdateStatus(r.Context(), id, vps.Status)
 			writeError(w, http.StatusInternalServerError, "failed to enqueue termination job")
 			return
@@ -256,7 +262,7 @@ func (h *VPSHandler) HandleTerminateVPS(w http.ResponseWriter, r *http.Request) 
 		_ = h.vpsRepo.UpdateStatus(r.Context(), id, "terminated")
 	}
 
-	log.Printf("[DEBUG] terminate_vps: vps %d termination queued", id)
+	h.log.Debug("terminate_vps_queued", "vps_id", id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "terminating"})
 }
 
@@ -287,7 +293,7 @@ func (h *VPSHandler) HandleDeleteVPS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[DEBUG] delete_vps: vps %d deleted from database", id)
+	h.log.Debug("delete_vps_deleted", "vps_id", id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -296,12 +302,26 @@ const credentialsCallbackMaxBodyBytes = 64 * 1024
 func (h *VPSHandler) HandleCredentialsCallback(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil || id <= 0 {
+		h.audit.Log(r.Context(), model.AuditLog{
+			Operation:    "vps.credentials_callback",
+			ResourceType: "vps",
+			ResourceID:   id,
+			Status:       "failure",
+			ErrorMessage: "invalid VPS id",
+		})
 		writeError(w, http.StatusBadRequest, "invalid VPS id")
 		return
 	}
 
 	token, ok := credentialsCallbackBearerToken(r.Header.Get("Authorization"))
 	if !ok {
+		h.audit.Log(r.Context(), model.AuditLog{
+			Operation:    "vps.credentials_callback",
+			ResourceType: "vps",
+			ResourceID:   id,
+			Status:       "failure",
+			ErrorMessage: "invalid token",
+		})
 		writeError(w, http.StatusUnauthorized, "invalid callback token")
 		return
 	}
@@ -309,37 +329,85 @@ func (h *VPSHandler) HandleCredentialsCallback(w http.ResponseWriter, r *http.Re
 	var creds map[string]any
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, credentialsCallbackMaxBodyBytes))
 	if err := decoder.Decode(&creds); err != nil {
+		h.audit.Log(r.Context(), model.AuditLog{
+			Operation:    "vps.credentials_callback",
+			ResourceType: "vps",
+			ResourceID:   id,
+			Status:       "failure",
+			ErrorMessage: "malformed JSON",
+		})
 		writeError(w, http.StatusBadRequest, "invalid credentials body")
 		return
 	}
 	if creds == nil {
+		h.audit.Log(r.Context(), model.AuditLog{
+			Operation:    "vps.credentials_callback",
+			ResourceType: "vps",
+			ResourceID:   id,
+			Status:       "failure",
+			ErrorMessage: "malformed JSON",
+		})
 		writeError(w, http.StatusBadRequest, "invalid credentials body")
 		return
 	}
 	if agentStatus, ok := creds["_agent"].(string); ok {
-		log.Printf("[DEBUG] credentials_callback: vps %d agent=%s", id, agentStatus)
+		h.log.Debug("credentials_callback_agent", "vps_id", id, "agent_status", agentStatus)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		h.audit.Log(r.Context(), model.AuditLog{
+			Operation:    "vps.credentials_callback",
+			ResourceType: "vps",
+			ResourceID:   id,
+			Status:       "failure",
+			ErrorMessage: "malformed JSON",
+		})
 		writeError(w, http.StatusBadRequest, "invalid credentials body")
 		return
 	}
 
 	credsJSON, err := json.Marshal(creds)
 	if err != nil {
+		h.audit.Log(r.Context(), model.AuditLog{
+			Operation:    "vps.credentials_callback",
+			ResourceType: "vps",
+			ResourceID:   id,
+			Status:       "failure",
+			ErrorMessage: "internal error",
+		})
 		writeError(w, http.StatusInternalServerError, "failed to marshal credentials")
 		return
 	}
 
 	consumed, err := h.vpsRepo.ConsumeCredentialsCallback(r.Context(), id, repository.HashCredentialsCallbackToken(token), string(credsJSON))
 	if err != nil {
+		h.audit.Log(r.Context(), model.AuditLog{
+			Operation:    "vps.credentials_callback",
+			ResourceType: "vps",
+			ResourceID:   id,
+			Status:       "failure",
+			ErrorMessage: "internal error",
+		})
 		writeError(w, http.StatusInternalServerError, "failed to update credentials")
 		return
 	}
 	if !consumed {
+		h.audit.Log(r.Context(), model.AuditLog{
+			Operation:    "vps.credentials_callback",
+			ResourceType: "vps",
+			ResourceID:   id,
+			Status:       "failure",
+			ErrorMessage: "expired token",
+		})
 		writeError(w, http.StatusUnauthorized, "invalid callback token")
 		return
 	}
 
+	h.audit.Log(r.Context(), model.AuditLog{
+		Operation:    "vps.credentials_callback",
+		ResourceType: "vps",
+		ResourceID:   id,
+		Status:       "success",
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -357,188 +425,188 @@ func credentialsCallbackBearerToken(header string) (string, bool) {
 func (h *VPSHandler) HandleStartVPS(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		log.Printf("[DEBUG] start_vps: invalid id: %v", err)
+		h.log.Debug("start_vps_invalid_id", "error", err)
 		writeError(w, http.StatusBadRequest, "invalid VPS id")
 		return
 	}
 
-	log.Printf("[DEBUG] start_vps: vps_id=%d", id)
+	h.log.Debug("start_vps_request", "vps_id", id)
 
 	vps, err := h.vpsRepo.Get(r.Context(), id)
 	if err != nil {
-		log.Printf("[DEBUG] start_vps: vps %d get failed: %v", id, err)
+		h.log.Debug("start_vps_get_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to get VPS")
 		return
 	}
 	if vps == nil {
-		log.Printf("[DEBUG] start_vps: vps %d not found", id)
+		h.log.Debug("start_vps_not_found", "vps_id", id)
 		writeError(w, http.StatusNotFound, "VPS not found")
 		return
 	}
 
-	log.Printf("[DEBUG] start_vps: vps %d current status=%s oci_instance_id=%s", id, vps.Status, vps.OCIInstanceID.String)
+	h.log.Debug("start_vps_status", "vps_id", id, "status", vps.Status, "oci_instance_id", vps.OCIInstanceID.String)
 
 	if h.provisionService == nil {
-		log.Printf("[DEBUG] start_vps: provisionService is nil")
+		h.log.Debug("start_vps_no_provision_service")
 		writeError(w, http.StatusServiceUnavailable, "provisioning service not available")
 		return
 	}
 
 	if err := h.provisionService.StartInstance(r.Context(), id); err != nil {
-		log.Printf("[DEBUG] start_vps: vps %d start failed: %v", id, err)
+		h.log.Debug("start_vps_start_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	vps, err = h.vpsRepo.Get(r.Context(), id)
 	if err != nil {
-		log.Printf("[DEBUG] start_vps: vps %d re-fetch after start failed: %v", id, err)
+		h.log.Debug("start_vps_refetch_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to get updated VPS")
 		return
 	}
 
-	log.Printf("[DEBUG] start_vps: vps %d started successfully, new status=%s", id, vps.Status)
+	h.log.Debug("start_vps_success", "vps_id", id, "status", vps.Status)
 	writeJSON(w, http.StatusOK, vps)
 }
 
 func (h *VPSHandler) HandleStopVPS(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		log.Printf("[DEBUG] stop_vps: invalid id: %v", err)
+		h.log.Debug("stop_vps_invalid_id", "error", err)
 		writeError(w, http.StatusBadRequest, "invalid VPS id")
 		return
 	}
 
-	log.Printf("[DEBUG] stop_vps: vps_id=%d", id)
+	h.log.Debug("stop_vps_request", "vps_id", id)
 
 	vps, err := h.vpsRepo.Get(r.Context(), id)
 	if err != nil {
-		log.Printf("[DEBUG] stop_vps: vps %d get failed: %v", id, err)
+		h.log.Debug("stop_vps_get_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to get VPS")
 		return
 	}
 	if vps == nil {
-		log.Printf("[DEBUG] stop_vps: vps %d not found", id)
+		h.log.Debug("stop_vps_not_found", "vps_id", id)
 		writeError(w, http.StatusNotFound, "VPS not found")
 		return
 	}
 
-	log.Printf("[DEBUG] stop_vps: vps %d current status=%s oci_instance_id=%s", id, vps.Status, vps.OCIInstanceID.String)
+	h.log.Debug("stop_vps_status", "vps_id", id, "status", vps.Status, "oci_instance_id", vps.OCIInstanceID.String)
 
 	if h.provisionService == nil {
-		log.Printf("[DEBUG] stop_vps: provisionService is nil")
+		h.log.Debug("stop_vps_no_provision_service")
 		writeError(w, http.StatusServiceUnavailable, "provisioning service not available")
 		return
 	}
 
 	if err := h.provisionService.StopInstance(r.Context(), id); err != nil {
-		log.Printf("[DEBUG] stop_vps: vps %d stop failed: %v", id, err)
+		h.log.Debug("stop_vps_stop_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	vps, err = h.vpsRepo.Get(r.Context(), id)
 	if err != nil {
-		log.Printf("[DEBUG] stop_vps: vps %d re-fetch after stop failed: %v", id, err)
+		h.log.Debug("stop_vps_refetch_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to get updated VPS")
 		return
 	}
 
-	log.Printf("[DEBUG] stop_vps: vps %d stopped successfully, new status=%s", id, vps.Status)
+	h.log.Debug("stop_vps_success", "vps_id", id, "status", vps.Status)
 	writeJSON(w, http.StatusOK, vps)
 }
 
 func (h *VPSHandler) HandleRestartVPS(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		log.Printf("[DEBUG] restart_vps: invalid id: %v", err)
+		h.log.Debug("restart_vps_invalid_id", "error", err)
 		writeError(w, http.StatusBadRequest, "invalid VPS id")
 		return
 	}
 
-	log.Printf("[DEBUG] restart_vps: vps_id=%d", id)
+	h.log.Debug("restart_vps_request", "vps_id", id)
 
 	vps, err := h.vpsRepo.Get(r.Context(), id)
 	if err != nil {
-		log.Printf("[DEBUG] restart_vps: vps %d get failed: %v", id, err)
+		h.log.Debug("restart_vps_get_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to get VPS")
 		return
 	}
 	if vps == nil {
-		log.Printf("[DEBUG] restart_vps: vps %d not found", id)
+		h.log.Debug("restart_vps_not_found", "vps_id", id)
 		writeError(w, http.StatusNotFound, "VPS not found")
 		return
 	}
 
-	log.Printf("[DEBUG] restart_vps: vps %d current status=%s oci_instance_id=%s", id, vps.Status, vps.OCIInstanceID.String)
+	h.log.Debug("restart_vps_status", "vps_id", id, "status", vps.Status, "oci_instance_id", vps.OCIInstanceID.String)
 
 	if h.provisionService == nil {
-		log.Printf("[DEBUG] restart_vps: provisionService is nil")
+		h.log.Debug("restart_vps_no_provision_service")
 		writeError(w, http.StatusServiceUnavailable, "provisioning service not available")
 		return
 	}
 
 	if err := h.provisionService.RestartInstance(r.Context(), id); err != nil {
-		log.Printf("[DEBUG] restart_vps: vps %d restart failed: %v", id, err)
+		h.log.Debug("restart_vps_restart_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	vps, err = h.vpsRepo.Get(r.Context(), id)
 	if err != nil {
-		log.Printf("[DEBUG] restart_vps: vps %d re-fetch after restart failed: %v", id, err)
+		h.log.Debug("restart_vps_refetch_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to get updated VPS")
 		return
 	}
 
-	log.Printf("[DEBUG] restart_vps: vps %d restarted successfully, new status=%s", id, vps.Status)
+	h.log.Debug("restart_vps_success", "vps_id", id, "status", vps.Status)
 	writeJSON(w, http.StatusOK, vps)
 }
 
 func (h *VPSHandler) HandleResetVPS(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		log.Printf("[DEBUG] reset_vps: invalid id: %v", err)
+		h.log.Debug("reset_vps_invalid_id", "error", err)
 		writeError(w, http.StatusBadRequest, "invalid VPS id")
 		return
 	}
 
-	log.Printf("[DEBUG] reset_vps: vps_id=%d", id)
+	h.log.Debug("reset_vps_request", "vps_id", id)
 
 	vps, err := h.vpsRepo.Get(r.Context(), id)
 	if err != nil {
-		log.Printf("[DEBUG] reset_vps: vps %d get failed: %v", id, err)
+		h.log.Debug("reset_vps_get_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to get VPS")
 		return
 	}
 	if vps == nil {
-		log.Printf("[DEBUG] reset_vps: vps %d not found", id)
+		h.log.Debug("reset_vps_not_found", "vps_id", id)
 		writeError(w, http.StatusNotFound, "VPS not found")
 		return
 	}
 
-	log.Printf("[DEBUG] reset_vps: vps %d current status=%s oci_instance_id=%s", id, vps.Status, vps.OCIInstanceID.String)
+	h.log.Debug("reset_vps_status", "vps_id", id, "status", vps.Status, "oci_instance_id", vps.OCIInstanceID.String)
 
 	if h.provisionService == nil {
-		log.Printf("[DEBUG] reset_vps: provisionService is nil")
+		h.log.Debug("reset_vps_no_provision_service")
 		writeError(w, http.StatusServiceUnavailable, "provisioning service not available")
 		return
 	}
 
 	if err := h.provisionService.ResetInstance(r.Context(), id); err != nil {
-		log.Printf("[DEBUG] reset_vps: vps %d reset failed: %v", id, err)
+		h.log.Debug("reset_vps_reset_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	vps, err = h.vpsRepo.Get(r.Context(), id)
 	if err != nil {
-		log.Printf("[DEBUG] reset_vps: vps %d re-fetch after reset failed: %v", id, err)
+		h.log.Debug("reset_vps_refetch_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to get updated VPS")
 		return
 	}
 
-	log.Printf("[DEBUG] reset_vps: vps %d reset successfully, new status=%s", id, vps.Status)
+	h.log.Debug("reset_vps_success", "vps_id", id, "status", vps.Status)
 	writeJSON(w, http.StatusOK, vps)
 }
 
@@ -549,50 +617,50 @@ type resetPasswordRequest struct {
 func (h *VPSHandler) HandleResetPasswordVPS(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		log.Printf("[DEBUG] reset_password: invalid id: %v", err)
+		h.log.Debug("reset_password_invalid_id", "error", err)
 		writeError(w, http.StatusBadRequest, "invalid VPS id")
 		return
 	}
 
-	log.Printf("[DEBUG] reset_password: vps_id=%d", id)
+	h.log.Debug("reset_password_request", "vps_id", id)
 
 	var req resetPasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("[DEBUG] reset_password: vps %d invalid body: %v", id, err)
+		h.log.Debug("reset_password_invalid_body", "vps_id", id, "error", err)
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	if err := service.ValidateResetPassword(req.Password); err != nil {
-		log.Printf("[DEBUG] reset_password: vps %d password policy failed: %v", id, err)
+		h.log.Debug("reset_password_policy_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	log.Printf("[DEBUG] reset_password: vps %d password length=%d", id, len(req.Password))
+	h.log.Debug("reset_password_password_length", "vps_id", id, "length", len(req.Password))
 
 	vps, err := h.vpsRepo.Get(r.Context(), id)
 	if err != nil {
-		log.Printf("[DEBUG] reset_password: vps %d get failed: %v", id, err)
+		h.log.Debug("reset_password_get_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to get VPS")
 		return
 	}
 	if vps == nil {
-		log.Printf("[DEBUG] reset_password: vps %d not found", id)
+		h.log.Debug("reset_password_not_found", "vps_id", id)
 		writeError(w, http.StatusNotFound, "VPS not found")
 		return
 	}
 
-	log.Printf("[DEBUG] reset_password: vps %d current status=%s oci_instance_id=%s", id, vps.Status, vps.OCIInstanceID.String)
+	h.log.Debug("reset_password_status", "vps_id", id, "status", vps.Status, "oci_instance_id", vps.OCIInstanceID.String)
 
 	if h.provisionService == nil {
-		log.Printf("[DEBUG] reset_password: provisionService is nil")
+		h.log.Debug("reset_password_no_provision_service")
 		writeError(w, http.StatusServiceUnavailable, "provisioning service not available")
 		return
 	}
 
 	if err := h.provisionService.ResetPassword(r.Context(), id, req.Password); err != nil {
-		log.Printf("[DEBUG] reset_password: vps %d reset password failed: %v", id, err)
+		h.log.Debug("reset_password_reset_failed", "vps_id", id, "error", err)
 		if errors.Is(err, service.ErrResetPasswordPolicy) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -603,48 +671,48 @@ func (h *VPSHandler) HandleResetPasswordVPS(w http.ResponseWriter, r *http.Reque
 
 	vps, err = h.vpsRepo.Get(r.Context(), id)
 	if err != nil {
-		log.Printf("[DEBUG] reset_password: vps %d re-fetch after reset failed: %v", id, err)
+		h.log.Debug("reset_password_refetch_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to get updated VPS")
 		return
 	}
 
-	log.Printf("[DEBUG] reset_password: vps %d password reset successfully", id)
+	h.log.Debug("reset_password_success", "vps_id", id)
 	writeJSON(w, http.StatusOK, vps)
 }
 
 func (h *VPSHandler) HandleGetFirewall(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		log.Printf("[DEBUG] firewall_get: invalid id: %v", err)
+		h.log.Debug("firewall_get_invalid_id", "error", err)
 		writeError(w, http.StatusBadRequest, "invalid VPS id")
 		return
 	}
 
-	log.Printf("[DEBUG] firewall_get: vps_id=%d", id)
+	h.log.Debug("firewall_get_request", "vps_id", id)
 
 	vps, err := h.vpsRepo.Get(r.Context(), id)
 	if err != nil {
-		log.Printf("[DEBUG] firewall_get: vps %d get failed: %v", id, err)
+		h.log.Debug("firewall_get_get_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to get VPS")
 		return
 	}
 	if vps == nil {
-		log.Printf("[DEBUG] firewall_get: vps %d not found", id)
+		h.log.Debug("firewall_get_not_found", "vps_id", id)
 		writeError(w, http.StatusNotFound, "VPS not found")
 		return
 	}
 
-	log.Printf("[DEBUG] firewall_get: vps %d found (status=%s network_id=%d)", id, vps.Status, vps.NetworkID.Int64)
+	h.log.Debug("firewall_get_found", "vps_id", id, "status", vps.Status, "network_id", vps.NetworkID.Int64)
 
 	if h.provisionService == nil {
-		log.Printf("[DEBUG] firewall_get: provisionService is nil")
+		h.log.Debug("firewall_get_no_provision_service")
 		writeError(w, http.StatusServiceUnavailable, "provisioning service not available")
 		return
 	}
 
 	rules, err := h.provisionService.GetFirewallRules(r.Context(), id)
 	if err != nil {
-		log.Printf("[DEBUG] firewall_get: GetFirewallRules failed: %v", err)
+		h.log.Debug("firewall_get_rules_failed", "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -659,7 +727,7 @@ func (h *VPSHandler) HandleGetFirewall(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	log.Printf("[DEBUG] firewall_get: vps %d returning %d ingress + %d egress rules", id, len(ingress), len(egress))
+	h.log.Debug("firewall_get_rules_count", "vps_id", id, "ingress_count", len(ingress), "egress_count", len(egress))
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ingress": ingress,
 		"egress":  egress,
@@ -669,58 +737,58 @@ func (h *VPSHandler) HandleGetFirewall(w http.ResponseWriter, r *http.Request) {
 func (h *VPSHandler) HandleUpdateFirewall(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		log.Printf("[DEBUG] firewall_update: invalid id: %v", err)
+		h.log.Debug("firewall_update_invalid_id", "error", err)
 		writeError(w, http.StatusBadRequest, "invalid VPS id")
 		return
 	}
 
-	log.Printf("[DEBUG] firewall_update: vps_id=%d", id)
+	h.log.Debug("firewall_update_request", "vps_id", id)
 
 	var req struct {
 		Rules []service.FirewallRule `json:"rules"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("[DEBUG] firewall_update: vps %d invalid body: %v", id, err)
+		h.log.Debug("firewall_update_invalid_body", "vps_id", id, "error", err)
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	log.Printf("[DEBUG] firewall_update: vps %d received %d rules", id, len(req.Rules))
+	h.log.Debug("firewall_update_rules_received", "vps_id", id, "rule_count", len(req.Rules))
 	for i, rule := range req.Rules {
-		log.Printf("[DEBUG] firewall_update: rule[%d] port=%d name=%q direction=%s source=%q dest=%q", i, rule.Port, rule.Name, rule.Direction, rule.Source, rule.Destination)
+		h.log.Debug("firewall_update_rule", "index", i, "port", rule.Port, "name", rule.Name, "direction", rule.Direction, "source", rule.Source, "destination", rule.Destination)
 	}
 
 	vps, err := h.vpsRepo.Get(r.Context(), id)
 	if err != nil {
-		log.Printf("[DEBUG] firewall_update: vps %d get failed: %v", id, err)
+		h.log.Debug("firewall_update_get_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to get VPS")
 		return
 	}
 	if vps == nil {
-		log.Printf("[DEBUG] firewall_update: vps %d not found", id)
+		h.log.Debug("firewall_update_not_found", "vps_id", id)
 		writeError(w, http.StatusNotFound, "VPS not found")
 		return
 	}
 
-	log.Printf("[DEBUG] firewall_update: vps %d found (status=%s network_id=%d)", id, vps.Status, vps.NetworkID.Int64)
+	h.log.Debug("firewall_update_found", "vps_id", id, "status", vps.Status, "network_id", vps.NetworkID.Int64)
 
 	if h.provisionService == nil {
-		log.Printf("[DEBUG] firewall_update: provisionService is nil")
+		h.log.Debug("firewall_update_no_provision_service")
 		writeError(w, http.StatusServiceUnavailable, "provisioning service not available")
 		return
 	}
 
 	if err := h.provisionService.UpdateFirewallRules(r.Context(), id, req.Rules); err != nil {
-		log.Printf("[DEBUG] firewall_update: vps %d UpdateFirewallRules failed: %v", id, err)
+		h.log.Debug("firewall_update_rules_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	log.Printf("[DEBUG] firewall_update: vps %d update successful, re-fetching rules", id)
+	h.log.Debug("firewall_update_success_refetching", "vps_id", id)
 
 	rules, err := h.provisionService.GetFirewallRules(r.Context(), id)
 	if err != nil {
-		log.Printf("[DEBUG] firewall_update: vps %d re-fetch rules failed: %v", id, err)
+		h.log.Debug("firewall_update_refetch_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -735,7 +803,7 @@ func (h *VPSHandler) HandleUpdateFirewall(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	log.Printf("[DEBUG] firewall_update: vps %d returning %d ingress + %d egress rules", id, len(ingress), len(egress))
+	h.log.Debug("firewall_update_rules_count", "vps_id", id, "ingress_count", len(ingress), "egress_count", len(egress))
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ingress": ingress,
 		"egress":  egress,
@@ -745,32 +813,32 @@ func (h *VPSHandler) HandleUpdateFirewall(w http.ResponseWriter, r *http.Request
 func (h *VPSHandler) HandleRefreshIPs(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
-		log.Printf("[DEBUG] refresh_ips: invalid id: %v", err)
+		h.log.Debug("refresh_ips_invalid_id", "error", err)
 		writeError(w, http.StatusBadRequest, "invalid VPS id")
 		return
 	}
 
-	log.Printf("[DEBUG] refresh_ips: vps_id=%d", id)
+	h.log.Debug("refresh_ips_request", "vps_id", id)
 
 	if h.provisionService == nil {
-		log.Printf("[DEBUG] refresh_ips: provisionService is nil")
+		h.log.Debug("refresh_ips_no_provision_service")
 		writeError(w, http.StatusServiceUnavailable, "provisioning service not available")
 		return
 	}
 
 	if err := h.provisionService.RefreshInstanceIPs(r.Context(), id); err != nil {
-		log.Printf("[DEBUG] refresh_ips: vps %d refresh failed: %v", id, err)
+		h.log.Debug("refresh_ips_refresh_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	vps, err := h.vpsRepo.Get(r.Context(), id)
 	if err != nil {
-		log.Printf("[DEBUG] refresh_ips: vps %d re-fetch failed: %v", id, err)
+		h.log.Debug("refresh_ips_refetch_failed", "vps_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to get updated VPS")
 		return
 	}
 
-	log.Printf("[DEBUG] refresh_ips: vps %d IPs refreshed public_ip=%s private_ip=%s", id, vps.PublicIP.String, vps.PrivateIP.String)
+	h.log.Debug("refresh_ips_success", "vps_id", id, "public_ip", vps.PublicIP.String, "private_ip", vps.PrivateIP.String)
 	writeJSON(w, http.StatusOK, vps)
 }

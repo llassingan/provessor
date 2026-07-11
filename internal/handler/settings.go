@@ -2,20 +2,23 @@ package handler
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"strings"
 
+	"github.com/llassingan/provessor/internal/logger"
+	"github.com/llassingan/provessor/internal/model"
 	"github.com/llassingan/provessor/internal/repository"
 	"github.com/llassingan/provessor/internal/validator"
 )
 
 type SettingsHandler struct {
-	repo *repository.SettingsRepository
+	repo  *repository.SettingsRepository
+	log   *logger.Logger
+	audit *repository.AuditLogRepository
 }
 
-func NewSettingsHandler(repo *repository.SettingsRepository) *SettingsHandler {
-	return &SettingsHandler{repo: repo}
+func NewSettingsHandler(repo *repository.SettingsRepository, log *logger.Logger, audit *repository.AuditLogRepository) *SettingsHandler {
+	return &SettingsHandler{repo: repo, log: log, audit: audit}
 }
 
 type settingsResponse struct {
@@ -39,12 +42,11 @@ func maskPrivateKey(key string) string {
 func (h *SettingsHandler) HandleGetSettings(w http.ResponseWriter, r *http.Request) {
 	s, err := h.repo.Get(r.Context())
 	if err != nil {
-		log.Printf("[DEBUG] get_settings: failed: %v", err)
+		h.log.Debug("get_settings_failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to load settings")
 		return
 	}
-	log.Printf("[DEBUG] get_settings: loaded (tenancy=%s region=%s compartment=%s has_key=%v)",
-		s.TenancyOCID, s.Region, s.CompartmentOCID, s.PrivateKey != "")
+	h.log.Debug("get_settings_loaded", "tenancy", s.TenancyOCID, "region", s.Region, "compartment", s.CompartmentOCID, "has_key", s.PrivateKey != "")
 	resp := settingsResponse{
 		ID:              s.ID,
 		TenancyOCID:     s.TenancyOCID,
@@ -76,6 +78,7 @@ type updateSettingsRequest struct {
 func (h *SettingsHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var req updateSettingsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.audit.Log(r.Context(), model.AuditLog{Operation: "settings.update", ResourceType: "settings", Status: "failure", ErrorMessage: "invalid request body"})
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -90,6 +93,7 @@ func (h *SettingsHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.Re
 
 	if req.TenancyOCID == "" || req.UserOCID == "" || req.Fingerprint == "" ||
 		req.Region == "" || req.CompartmentOCID == "" || req.APIToken == "" {
+		h.audit.Log(r.Context(), model.AuditLog{Operation: "settings.update", ResourceType: "settings", Status: "failure", ErrorMessage: "all fields except private_key are required"})
 		writeError(w, http.StatusBadRequest, "all fields except private_key are required")
 		return
 	}
@@ -97,18 +101,19 @@ func (h *SettingsHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.Re
 	privateKey := strings.TrimSpace(req.PrivateKey)
 	if privateKey != "" && privateKey != "********" {
 		if !strings.Contains(privateKey, "-----BEGIN PRIVATE KEY-----") {
-			log.Printf("[DEBUG] update_settings: invalid private_key format")
+			h.audit.Log(r.Context(), model.AuditLog{Operation: "settings.update", ResourceType: "settings", Status: "failure", ErrorMessage: "invalid private key format"})
+			h.log.Debug("update_settings_invalid_private_key_format")
 			writeError(w, http.StatusBadRequest, "private_key must contain -----BEGIN PRIVATE KEY-----")
 			return
 		}
 	}
 
-	log.Printf("[DEBUG] update_settings: tenancy=%q region=%q compartment=%q has_existing_key=%v has_new_key=%v",
-		req.TenancyOCID, req.Region, req.CompartmentOCID, privateKey == "" || privateKey == "********", privateKey != "" && privateKey != "********")
+	h.log.Debug("update_settings_request", "tenancy", req.TenancyOCID, "region", req.Region, "compartment", req.CompartmentOCID, "has_existing_key", privateKey == "" || privateKey == "********", "has_new_key", privateKey != "" && privateKey != "********")
 
 	s, err := h.repo.Get(r.Context())
 	if err != nil {
-		log.Printf("[DEBUG] update_settings: get existing failed: %v", err)
+		h.audit.Log(r.Context(), model.AuditLog{Operation: "settings.update", ResourceType: "settings", Status: "failure", ErrorMessage: "failed to load settings"})
+		h.log.Debug("update_settings_get_existing_failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to load settings")
 		return
 	}
@@ -126,19 +131,22 @@ func (h *SettingsHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.Re
 	}
 
 	if err := h.repo.Update(r.Context(), s); err != nil {
-		log.Printf("[DEBUG] update_settings: update failed: %v", err)
+		h.audit.Log(r.Context(), model.AuditLog{Operation: "settings.update", ResourceType: "settings", Status: "failure", ErrorMessage: "failed to update settings"})
+		h.log.Debug("update_settings_update_failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to update settings")
 		return
 	}
 
-	log.Printf("[DEBUG] update_settings: updated successfully")
+	h.log.Debug("update_settings_updated")
 
 	s, err = h.repo.Get(r.Context())
 	if err != nil {
+		h.audit.Log(r.Context(), model.AuditLog{Operation: "settings.update", ResourceType: "settings", Status: "failure", ErrorMessage: "failed to reload settings"})
 		writeError(w, http.StatusInternalServerError, "failed to reload settings")
 		return
 	}
 
+	h.audit.Log(r.Context(), model.AuditLog{Operation: "settings.update", ResourceType: "settings", Status: "success"})
 	resp := settingsResponse{
 		ID:              s.ID,
 		TenancyOCID:     s.TenancyOCID,
