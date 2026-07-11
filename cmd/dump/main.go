@@ -37,7 +37,7 @@ func resolveEncryptionKey() string {
 }
 
 func dumpAll(d *sql.DB) {
-	tables := []string{"users", "vps"}
+	tables := []string{"users", "vps","audit_log"}
 	for _, t := range tables {
 		rows, _ := d.Query("SELECT * FROM " + t)
 		cols, _ := rows.Columns()
