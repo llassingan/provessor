@@ -818,32 +818,153 @@ func (s *VPSProvisionService) RestartInstance(ctx context.Context, vpsID int64) 
 
 	s.log.Debug("restart_instance_region", "vps_id", vpsID, "region", region, "instance_id", vps.OCIInstanceID.String)
 
-	computeClient, err := s.computeService.GetComputeClient(ctx, region)
-	if err != nil {
-		s.log.Debug("restart_instance_get_client_failed", "vps_id", vpsID, "error", err)
-		return fmt.Errorf("get compute client: %w", err)
+	instanceID := vps.OCIInstanceID.String
+
+	if err := s.vpsRepo.UpdateStatus(ctx, vpsID, "restarting"); err != nil {
+		s.log.Debug("restart_instance_update_status_failed", "vps_id", vpsID, "error", err)
+		return fmt.Errorf("update status: %w", err)
+	}
+	if err := s.vpsRepo.UpdateProvisioningState(ctx, vpsID, string(StateVPSRestarting)); err != nil {
+		s.log.Warn("restart_instance_update_prov_state_failed", "vps_id", vpsID, "error", err)
 	}
 
-	action := core.InstanceActionActionSoftreset
-	_, err = computeClient.InstanceAction(ctx, core.InstanceActionRequest{
-		InstanceId: common.String(vps.OCIInstanceID.String),
-		Action:     action,
+	channel := fmt.Sprintf("vps:%d", vpsID)
+	s.broker.Publish(channel, sse.SSEEvent{
+		Type:    "status",
+		Status:  "restarting",
+		Step:    "restart_initiated",
+		Message: "Restart initiated — graceful OS reboot",
+	})
+
+	go s.doRestartInstance(vpsID, region, instanceID)
+
+	s.log.Debug("restart_instance_dispatched", "vps_id", vpsID)
+	return nil
+}
+
+func (s *VPSProvisionService) doRestartInstance(vpsID int64, region, instanceID string) {
+	bgCtx := context.Background()
+	channel := fmt.Sprintf("vps:%d", vpsID)
+
+	s.log.Debug("do_restart_instance_begin", "vps_id", vpsID, "region", region, "instance_id", instanceID)
+
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Error("restart_instance_panic", "vps_id", vpsID, "error", fmt.Errorf("%v", r))
+			_ = s.vpsRepo.UpdateStatus(bgCtx, vpsID, "running")
+			_ = s.vpsRepo.UpdateProvisioningState(bgCtx, vpsID, string(StateVPSReady))
+			s.broker.Publish(channel, sse.SSEEvent{
+				Type:    "error",
+				Status:  "running",
+				Step:    "restart_failed",
+				Message: "Restart failed due to an internal error",
+			})
+		}
+	}()
+
+	computeClient, err := s.computeService.GetComputeClient(bgCtx, region)
+	if err != nil {
+		s.doRestartRollback(bgCtx, vpsID, channel, fmt.Sprintf("Failed to connect to cloud provider: %v", err))
+		return
+	}
+
+	_, err = computeClient.InstanceAction(bgCtx, core.InstanceActionRequest{
+		InstanceId: common.String(instanceID),
+		Action:     core.InstanceActionActionSoftreset,
 	})
 	if err != nil {
-		s.log.Debug("restart_instance_action_failed", "vps_id", vpsID, "error", err)
-		return fmt.Errorf("instance action restart: %w", err)
+		s.doRestartRollback(bgCtx, vpsID, channel, fmt.Sprintf("Cloud provider rejected restart: %v", err))
+		return
 	}
 
-	s.log.Debug("restart_instance_success", "vps_id", vpsID)
+	s.log.Debug("restart_instance_oci_action_sent", "vps_id", vpsID, "instance_id", instanceID)
 
-	s.broker.Publish(fmt.Sprintf("vps:%d", vpsID), sse.SSEEvent{
+	s.broker.Publish(channel, sse.SSEEvent{
+		Type:    "status",
+		Status:  "restarting",
+		Step:    "restart_rebooting",
+		Message: "Instance is rebooting — waiting for it to come back online",
+	})
+
+	s.log.Debug("restart_instance_polling_begin", "vps_id", vpsID)
+	if err := s.waitForRestartRunning(bgCtx, vpsID, region, instanceID); err != nil {
+		s.doRestartRollback(bgCtx, vpsID, channel, fmt.Sprintf("Instance did not recover: %v", err))
+		return
+	}
+	s.log.Debug("restart_instance_polling_complete", "vps_id", vpsID)
+
+	_ = s.vpsRepo.UpdateStatus(bgCtx, vpsID, "running")
+	_ = s.vpsRepo.UpdateProvisioningState(bgCtx, vpsID, string(StateVPSReady))
+
+	s.broker.Publish(channel, sse.SSEEvent{
 		Type:    "status",
 		Status:  "running",
-		Step:    "restarted",
-		Message: "VPS instance restarted",
+		Step:    "restart_complete",
+		Message: "Instance restart complete — back online",
 	})
 
-	return nil
+	s.audit.Log(bgCtx, model.AuditLog{
+		Operation:    "vps.restart.async",
+		ResourceType: "vps",
+		ResourceID:   vpsID,
+		Status:       "success",
+	})
+	s.log.Debug("restart_instance_complete", "vps_id", vpsID)
+}
+
+func (s *VPSProvisionService) waitForRestartRunning(ctx context.Context, vpsID int64, region, instanceID string) error {
+	channel := fmt.Sprintf("vps:%d", vpsID)
+	deadline := time.Now().Add(5 * time.Minute)
+	started := time.Now()
+
+	for time.Now().Before(deadline) {
+		instance, err := s.computeService.GetInstance(ctx, region, instanceID)
+		if err != nil {
+			s.log.Debug("restart_instance_get_failed_retrying", "vps_id", vpsID, "error", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		state := instance.LifecycleState
+		elapsed := time.Since(started).Round(time.Second)
+
+		switch state {
+		case core.InstanceLifecycleStateRunning:
+			return nil
+		case core.InstanceLifecycleStateTerminated, core.InstanceLifecycleStateTerminating:
+			return fmt.Errorf("instance entered %s during restart", state)
+		default:
+			s.broker.Publish(channel, sse.SSEEvent{
+				Type:      "status",
+				Status:    "restarting",
+				Step:      "restart_rebooting",
+				Message:   fmt.Sprintf("Instance state: %s (%s elapsed)", state, elapsed),
+				Timestamp: time.Now().UnixMilli(),
+			})
+			time.Sleep(5 * time.Second)
+		}
+	}
+
+	return fmt.Errorf("instance did not reach running state within 5 minutes")
+}
+
+func (s *VPSProvisionService) doRestartRollback(ctx context.Context, vpsID int64, channel, errMsg string) {
+	s.log.Warn("restart_instance_rollback", "vps_id", vpsID, "error", errMsg)
+	_ = s.vpsRepo.UpdateStatus(ctx, vpsID, "running")
+	_ = s.vpsRepo.UpdateProvisioningState(ctx, vpsID, string(StateVPSReady))
+	s.broker.Publish(channel, sse.SSEEvent{
+		Type:    "error",
+		Status:  "running",
+		Step:    "restart_failed",
+		Message: "Restart failed: " + errMsg,
+	})
+	s.audit.Log(ctx, model.AuditLog{
+		Operation:    "vps.restart.async",
+		ResourceType: "vps",
+		ResourceID:   vpsID,
+		Status:       "failure",
+		ErrorMessage: sanitize(errMsg),
+	})
 }
 
 func (s *VPSProvisionService) ResetInstance(ctx context.Context, vpsID int64) (err error) {

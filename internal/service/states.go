@@ -24,6 +24,7 @@ const (
 	StateWaitingRunning      VPSProvisioningState = "waiting_running"
 	StateCreatingSSHUser     VPSProvisioningState = "creating_ssh_user"
 	StateVPSReady            VPSProvisioningState = "ready"
+	StateVPSRestarting       VPSProvisioningState = "restarting"
 	StateVPSResetting        VPSProvisioningState = "resetting"
 	StateVPSFailed           VPSProvisioningState = "failed"
 	StateVPSRollingBack      VPSProvisioningState = "rolling_back"
