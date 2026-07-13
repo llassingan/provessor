@@ -177,13 +177,6 @@ export default function VPSManage(): JSX.Element {
       });
   }, [numericId]);
 
-  const refreshVPS = (): void => {
-    if (numericId === 0) return;
-    vps.get(numericId).then(setInstance).catch(() => {
-      // silent refresh
-    });
-  };
-
   const handleRefreshIPs = async (): Promise<void> => {
     if (!instance) return;
     setRefreshingIPs(true);
@@ -339,7 +332,9 @@ export default function VPSManage(): JSX.Element {
         <PasswordTab vpsId={instance.id} />
       )}
       {activeTab === "restart" && (
-        <RestartTab vpsId={instance.id} onSuccess={refreshVPS} />
+        <RestartTab vpsId={instance.id} onSuccess={() => {
+          navigate(`/vps/${String(instance.id)}`);
+        }} />
       )}
       {activeTab === "reset" && (
         <ResetTab vpsId={instance.id} onSuccess={() => {
