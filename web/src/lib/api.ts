@@ -131,6 +131,7 @@ export type VPSStatus =
   | "provisioning"
   | "running"
   | "stopped"
+  | "resetting"
   | "failed"
   | "terminating"
   | "terminated";

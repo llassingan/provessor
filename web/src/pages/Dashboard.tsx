@@ -15,6 +15,7 @@ function StatusBadge({ status }: { status: VPS["status"] }): JSX.Element {
     provisioning: "bg-blue-100 text-blue-700",
     running: "bg-emerald-100 text-emerald-700",
     stopped: "bg-amber-100 text-amber-700",
+    resetting: "bg-red-100 text-red-700",
     failed: "bg-red-100 text-red-700",
     terminating: "bg-orange-100 text-orange-700",
     terminated: "bg-gray-100 text-gray-500 line-through",
@@ -25,6 +26,7 @@ function StatusBadge({ status }: { status: VPS["status"] }): JSX.Element {
     provisioning: "Provisioning",
     running: "Running",
     stopped: "Stopped",
+    resetting: "Resetting",
     failed: "Failed",
     terminating: "Terminating",
     terminated: "Terminated",
@@ -36,6 +38,9 @@ function StatusBadge({ status }: { status: VPS["status"] }): JSX.Element {
     >
       {status === "provisioning" && (
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
+      )}
+      {status === "resetting" && (
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-500" />
       )}
       {status === "terminating" && (
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-orange-500" />

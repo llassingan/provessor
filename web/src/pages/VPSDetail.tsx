@@ -12,6 +12,7 @@ function StatusBadge({ status }: { status: VPS["status"] }): JSX.Element {
     provisioning: "bg-blue-100 text-blue-700",
     running: "bg-emerald-100 text-emerald-700",
     stopped: "bg-amber-100 text-amber-700",
+    resetting: "bg-red-100 text-red-700",
     failed: "bg-red-100 text-red-700",
     terminating: "bg-orange-100 text-orange-700",
     terminated: "bg-gray-100 text-gray-500",
@@ -22,6 +23,7 @@ function StatusBadge({ status }: { status: VPS["status"] }): JSX.Element {
     provisioning: "Provisioning",
     running: "Running",
     stopped: "Stopped",
+    resetting: "Resetting",
     failed: "Failed",
     terminating: "Terminating",
     terminated: "Terminated",
@@ -33,6 +35,9 @@ function StatusBadge({ status }: { status: VPS["status"] }): JSX.Element {
     >
       {status === "provisioning" && (
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
+      )}
+      {status === "resetting" && (
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-500" />
       )}
       {status === "terminating" && (
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-orange-500" />
@@ -174,11 +179,11 @@ export default function VPSDetail(): JSX.Element {
     }
   }, [events, numericId]);
 
-  // Poll while terminating — OCI termination takes ~1min and the SSE
-  // heartbeat keeps the connection alive, so the reconnect poll below
-  // never triggers. Poll every 5s until status leaves "terminating".
+  // Poll while terminating or resetting — OCI termination/reset can take
+  // minutes, and the SSE heartbeat keeps the connection alive so the
+  // reconnect poll below never triggers. Poll every 5s.
   useEffect(() => {
-    if (!instance || instance.status !== "terminating") return;
+    if (!instance || (instance.status !== "terminating" && instance.status !== "resetting")) return;
     const interval = setInterval(() => {
       vps.get(numericId).then((data) => {
         setInstance((prev) => {
@@ -193,7 +198,7 @@ export default function VPSDetail(): JSX.Element {
   // Poll VPS status on SSE connect/reconnect — events may have been missed
   // while the SSE connection was dropped during provisioning.
   useEffect(() => {
-    if (!connected || !instance || instance.status === "running" || instance.status === "failed" || instance.status === "stopped" || instance.status === "terminated") return;
+    if (!connected || !instance || instance.status === "running" || instance.status === "resetting" || instance.status === "failed" || instance.status === "stopped" || instance.status === "terminated") return;
     vps.get(numericId).then((data) => {
       if (data.status !== instance.status) setInstance(data);
     }).catch(() => {});
