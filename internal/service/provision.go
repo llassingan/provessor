@@ -887,32 +887,160 @@ func (s *VPSProvisionService) ResetInstance(ctx context.Context, vpsID int64) (e
 
 	s.log.Debug("reset_instance_region", "vps_id", vpsID, "region", region, "instance_id", vps.OCIInstanceID.String)
 
-	computeClient, err := s.computeService.GetComputeClient(ctx, region)
-	if err != nil {
-		s.log.Debug("reset_instance_get_client_failed", "vps_id", vpsID, "error", err)
-		return fmt.Errorf("get compute client: %w", err)
+	previousStatus := vps.Status
+	instanceID := vps.OCIInstanceID.String
+
+	if err := s.vpsRepo.UpdateStatus(ctx, vpsID, "resetting"); err != nil {
+		s.log.Debug("reset_instance_update_status_failed", "vps_id", vpsID, "error", err)
+		return fmt.Errorf("update status: %w", err)
+	}
+	if err := s.vpsRepo.UpdateProvisioningState(ctx, vpsID, string(StateVPSResetting)); err != nil {
+		s.log.Warn("reset_instance_update_prov_state_failed", "vps_id", vpsID, "error", err)
 	}
 
-	action := core.InstanceActionActionReset
-	_, err = computeClient.InstanceAction(ctx, core.InstanceActionRequest{
-		InstanceId: common.String(vps.OCIInstanceID.String),
-		Action:     action,
+	channel := fmt.Sprintf("vps:%d", vpsID)
+	s.broker.Publish(channel, sse.SSEEvent{
+		Type:    "status",
+		Status:  "resetting",
+		Step:    "reset_initiated",
+		Message: "Reset initiated — forcing instance power cycle",
+	})
+
+	go s.doResetInstance(vpsID, region, instanceID, previousStatus)
+
+	s.log.Debug("reset_instance_dispatched", "vps_id", vpsID)
+	return nil
+}
+
+// doResetInstance performs the actual OCI reset + polling. It runs in a
+// background goroutine so the HTTP handler returns immediately.
+func (s *VPSProvisionService) doResetInstance(vpsID int64, region, instanceID, previousStatus string) {
+	bgCtx := context.Background()
+	channel := fmt.Sprintf("vps:%d", vpsID)
+
+	s.log.Debug("do_reset_instance_begin", "vps_id", vpsID, "region", region, "instance_id", instanceID)
+
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Error("reset_instance_panic", "vps_id", vpsID, "error", fmt.Errorf("%v", r))
+			_ = s.vpsRepo.UpdateStatus(bgCtx, vpsID, previousStatus)
+			_ = s.vpsRepo.UpdateProvisioningState(bgCtx, vpsID, string(StateVPSReady))
+			s.broker.Publish(channel, sse.SSEEvent{
+				Type:    "error",
+				Status:  previousStatus,
+				Step:    "reset_failed",
+				Message: "Reset failed due to an internal error",
+			})
+		}
+	}()
+
+	computeClient, err := s.computeService.GetComputeClient(bgCtx, region)
+	if err != nil {
+		s.doResetRollback(bgCtx, vpsID, previousStatus, channel, fmt.Sprintf("Failed to connect to cloud provider: %v", err))
+		return
+	}
+
+	_, err = computeClient.InstanceAction(bgCtx, core.InstanceActionRequest{
+		InstanceId: common.String(instanceID),
+		Action:     core.InstanceActionActionReset,
 	})
 	if err != nil {
-		s.log.Debug("reset_instance_action_failed", "vps_id", vpsID, "error", err)
-		return fmt.Errorf("instance action reset: %w", err)
+		s.doResetRollback(bgCtx, vpsID, previousStatus, channel, fmt.Sprintf("Cloud provider rejected reset: %v", err))
+		return
 	}
 
-	s.log.Debug("reset_instance_success", "vps_id", vpsID)
+	s.log.Debug("reset_instance_oci_action_sent", "vps_id", vpsID, "instance_id", instanceID)
 
-	s.broker.Publish(fmt.Sprintf("vps:%d", vpsID), sse.SSEEvent{
+	s.broker.Publish(channel, sse.SSEEvent{
+		Type:    "status",
+		Status:  "resetting",
+		Step:    "reset_power_cycle",
+		Message: "Instance is power cycling — waiting for it to come back online",
+	})
+
+	s.log.Debug("reset_instance_polling_begin", "vps_id", vpsID)
+	if err := s.waitForResetRunning(bgCtx, vpsID, region, instanceID); err != nil {
+		s.doResetRollback(bgCtx, vpsID, previousStatus, channel, fmt.Sprintf("Instance did not recover: %v", err))
+		return
+	}
+	s.log.Debug("reset_instance_polling_complete", "vps_id", vpsID)
+
+	_ = s.vpsRepo.UpdateStatus(bgCtx, vpsID, "running")
+	_ = s.vpsRepo.UpdateProvisioningState(bgCtx, vpsID, string(StateVPSReady))
+
+	s.broker.Publish(channel, sse.SSEEvent{
 		Type:    "status",
 		Status:  "running",
-		Step:    "reset",
-		Message: "VPS instance reset",
+		Step:    "reset_complete",
+		Message: "Instance reset complete — back online",
 	})
 
-	return nil
+	s.audit.Log(bgCtx, model.AuditLog{
+		Operation:    "vps.reset.async",
+		ResourceType: "vps",
+		ResourceID:   vpsID,
+		Status:       "success",
+	})
+	s.log.Debug("reset_instance_complete", "vps_id", vpsID)
+}
+
+// waitForResetRunning polls GetInstance until LifecycleState == RUNNING.
+// A hard reset power-cycles the instance, so it may transition through
+// STOPPING → STOPPED → STARTING → RUNNING. We wait up to 10 minutes.
+func (s *VPSProvisionService) waitForResetRunning(ctx context.Context, vpsID int64, region, instanceID string) error {
+	channel := fmt.Sprintf("vps:%d", vpsID)
+	deadline := time.Now().Add(10 * time.Minute)
+	started := time.Now()
+
+	for time.Now().Before(deadline) {
+		instance, err := s.computeService.GetInstance(ctx, region, instanceID)
+		if err != nil {
+			s.log.Debug("reset_instance_get_failed_retrying", "vps_id", vpsID, "error", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		state := instance.LifecycleState
+		elapsed := time.Since(started).Round(time.Second)
+
+		switch state {
+		case core.InstanceLifecycleStateRunning:
+			return nil
+		case core.InstanceLifecycleStateTerminated, core.InstanceLifecycleStateTerminating:
+			return fmt.Errorf("instance entered %s during reset", state)
+		default:
+			s.broker.Publish(channel, sse.SSEEvent{
+				Type:      "status",
+				Status:    "resetting",
+				Step:      "reset_power_cycle",
+				Message:   fmt.Sprintf("Instance state: %s (%s elapsed)", state, elapsed),
+				Timestamp: time.Now().UnixMilli(),
+			})
+			time.Sleep(5 * time.Second)
+		}
+	}
+
+	return fmt.Errorf("instance did not reach running state within 10 minutes")
+}
+
+// doResetRollback reverts the VPS status on reset failure and emits an SSE error.
+func (s *VPSProvisionService) doResetRollback(ctx context.Context, vpsID int64, previousStatus, channel, errMsg string) {
+	s.log.Warn("reset_instance_rollback", "vps_id", vpsID, "error", errMsg)
+	_ = s.vpsRepo.UpdateStatus(ctx, vpsID, previousStatus)
+	_ = s.vpsRepo.UpdateProvisioningState(ctx, vpsID, string(StateVPSReady))
+	s.broker.Publish(channel, sse.SSEEvent{
+		Type:    "error",
+		Status:  previousStatus,
+		Step:    "reset_failed",
+		Message: "Reset failed: " + errMsg,
+	})
+	s.audit.Log(ctx, model.AuditLog{
+		Operation:    "vps.reset.async",
+		ResourceType: "vps",
+		ResourceID:   vpsID,
+		Status:       "failure",
+		ErrorMessage: sanitize(errMsg),
+	})
 }
 
 func (s *VPSProvisionService) ResetPassword(ctx context.Context, vpsID int64, newPassword string) (err error) {
