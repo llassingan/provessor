@@ -207,19 +207,32 @@ export default function CustomTemplate(): JSX.Element {
         </div>
 
         <div>
-          <label className="mb-1 block text-sm font-medium text-gray-700">
-            Default OCPU: {ocpu}
+          <label className="mb-1 flex items-center justify-between text-sm font-medium text-gray-700">
+            <span>Default OCPU: {ocpu}</span>
           </label>
-          <input
-            type="range"
-            min={1}
-            max={64}
-            value={ocpu}
-            onChange={(e) => {
-              setOcpu(Number(e.target.value));
-            }}
-            className="w-full accent-primary-600"
-          />
+          <div className="flex items-center gap-3">
+            <input
+              type="range"
+              min={1}
+              max={64}
+              value={ocpu}
+              onChange={(e) => {
+                setOcpu(Number(e.target.value));
+              }}
+              className="flex-1 accent-primary-600"
+            />
+            <input
+              type="number"
+              min={1}
+              max={64}
+              value={ocpu}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                if (!Number.isNaN(v)) setOcpu(Math.max(1, Math.min(64, v)));
+              }}
+              className="w-20 rounded-lg border border-gray-300 px-2 py-1.5 text-center text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+            />
+          </div>
           <div className="flex justify-between text-xs text-gray-400">
             <span>1</span>
             <span>64</span>
@@ -227,20 +240,33 @@ export default function CustomTemplate(): JSX.Element {
         </div>
 
         <div>
-          <label className="mb-1 block text-sm font-medium text-gray-700">
-            Default Memory (GB): {memory}
+          <label className="mb-1 flex items-center justify-between text-sm font-medium text-gray-700">
+            <span>Default Memory (GB): {memory}</span>
           </label>
-          <input
-            type="range"
-            min={1}
-            max={1024}
-            step={1}
-            value={memory}
-            onChange={(e) => {
-              setMemory(Number(e.target.value));
-            }}
-            className="w-full accent-primary-600"
-          />
+          <div className="flex items-center gap-3">
+            <input
+              type="range"
+              min={1}
+              max={1024}
+              step={1}
+              value={memory}
+              onChange={(e) => {
+                setMemory(Number(e.target.value));
+              }}
+              className="flex-1 accent-primary-600"
+            />
+            <input
+              type="number"
+              min={1}
+              max={1024}
+              value={memory}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                if (!Number.isNaN(v)) setMemory(Math.max(1, Math.min(1024, v)));
+              }}
+              className="w-20 rounded-lg border border-gray-300 px-2 py-1.5 text-center text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+            />
+          </div>
           <div className="flex justify-between text-xs text-gray-400">
             <span>1 GB</span>
             <span>1024 GB</span>
